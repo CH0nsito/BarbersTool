@@ -17,7 +17,7 @@
 
 ## Ficha técnica
 
-- **IDE:** Android Studio (Koala | 2024.1.x).
+- **IDE:** Android Studio Quail (2026.1.x)
 - **SDK:** Android SDK 34 (compileSdk / targetSdk), minSdk 24
 - **Lenguaje:** Kotlin 1.9.24 (probablemente por la compatibilidad)
 - **Gestor de dependencias:** Gradle (Kotlin DSL - `build.gradle.kts`) 8.5.2
