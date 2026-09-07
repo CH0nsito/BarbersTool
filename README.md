@@ -1,10 +1,7 @@
 # Barber's Tool
 
-App para agendar citas en una barbería, desarrollada en Kotlin con Jetpack
-Compose, siguiendo una arquitectura por capas (`data` / `domain` / `ui`) para
-separar responsabilidades desde el inicio del proyecto.
 
-## Equipo
+## Equipaso
 
 - Muro Lopez Sean Josue
 - Cervantes Lopez Raul
@@ -20,9 +17,9 @@ separar responsabilidades desde el inicio del proyecto.
 
 ## Ficha técnica
 
-- **IDE:** Android Studio (Koala | 2024.1.x) — *ajusta a la versión que tengas instalada*
+- **IDE:** Android Studio (Koala | 2024.1.x)
 - **SDK:** Android SDK 34 (compileSdk / targetSdk), minSdk 24
-- **Lenguaje:** Kotlin 1.9.24
+- **Lenguaje:** Kotlin 1.9.24 (probablemente por la compatibilidad)
 - **Gestor de dependencias:** Gradle (Kotlin DSL - `build.gradle.kts`) 8.5.2
 - **UI Toolkit:** Jetpack Compose (BOM 2024.06.00) + Navigation Compose
 
@@ -56,9 +53,3 @@ app/src/main/java/com/chon/agendabarberia/
 └── utils/           # Utilidades y extensiones
 ```
 
-## Cómo ejecutar
-
-1. Clona el repositorio.
-2. Ábrelo con Android Studio.
-3. Deja que Gradle sincronice las dependencias.
-4. Ejecuta en un emulador o dispositivo físico (API 24+).
