@@ -23,8 +23,8 @@ import java.util.UUID
 fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: String, back: () -> Unit, onConfirmed: () -> Unit, message: (String) -> Unit) {
     val existing = remember(editId) { state.appointments.find { it.id == editId } }
     var step by rememberSaveable(editId) { mutableIntStateOf(if (existing != null) 2 else 1) }
-    var service by rememberSaveable(editId) { mutableIntStateOf(existing?.service ?: 0) }
-    var barber by rememberSaveable(editId) { mutableIntStateOf(existing?.barber ?: barberId) }
+    var service by rememberSaveable(editId) { mutableIntStateOf(existing?.service ?: firstActiveService()) }
+    var barber by rememberSaveable(editId) { mutableIntStateOf(existing?.barber ?: if (barberId in barbers.indices && barbers[barberId].active) barberId else firstActiveBarber()) }
     var date by rememberSaveable(editId) { mutableLongStateOf(existing?.date?.coerceAtLeast(today()) ?: nextDay(today(), 1)) }
     var time by rememberSaveable(editId) { mutableStateOf(existing?.time ?: "") }
     var month by rememberSaveable(editId) { mutableLongStateOf(date) }
@@ -46,7 +46,7 @@ fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: Strin
                 1 -> {
                     Heading("¿Qué hacemos hoy?", "Elige el servicio que necesitas.")
                     services.forEachIndexed { i, item ->
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Color.White).border(if (service == i) 1.5.dp else 1.dp, if (service == i) Red else Line, RoundedCornerShape(15.dp)).clickable { service = i; time = "" }.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (item.active || i == service) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(Color.White).border(if (service == i) 1.5.dp else 1.dp, if (service == i) Red else Line, RoundedCornerShape(15.dp)).clickable { service = i; time = "" }.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Photo(item.photo, Modifier.size(52.dp).clip(RoundedCornerShape(10.dp)))
                             Column(Modifier.weight(1f)) { Text(item.name, fontSize = 14.sp, fontWeight = FontWeight.Bold); Text("${item.minutes} min · cuidado a tu medida", color = Muted, fontSize = 10.sp) }
                             Text("$${item.price}", fontWeight = FontWeight.Bold, fontSize = 15.sp)
@@ -55,7 +55,7 @@ fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: Strin
                     }
                     Heading("Elige a tu barbero")
                     barbers.forEachIndexed { i, person ->
-                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (barber == i) SoftBlue else Color.White).clickable { barber = i; time = "" }.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (person.active || i == barber) Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(if (barber == i) SoftBlue else Color.White).clickable { barber = i; time = "" }.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Photo(person.photo, Modifier.size(38.dp).clip(CircleShape)); Column(Modifier.weight(1f)) { Text(person.name, fontSize = 13.sp, fontWeight = FontWeight.Bold); Text(person.specialty, fontSize = 11.sp, color = Muted) }; if (barber == i) Glyph("check", Navy, 20.dp) else Text("★ ${person.rating}", fontSize = 12.sp, color = Navy)
                         }
                     }
@@ -80,7 +80,7 @@ fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: Strin
                                 for (col in 0..6) {
                                     val day = row * 7 + col - offset + 1
                                     val dayMillis = Calendar.getInstance().apply { timeInMillis = calendar.timeInMillis; set(Calendar.DAY_OF_MONTH, day.coerceAtLeast(1)) }.timeInMillis
-                                    val valid = day in 1..count && dayMillis >= today() && dayMillis <= nextDay(today(), 180)
+                                    val valid = day in 1..count && dayMillis >= today() && dayMillis <= nextDay(today(), 180) && !isClosedDay(dayMillis)
                                     Box(Modifier.weight(1f).height(42.dp).padding(2.dp).clip(RoundedCornerShape(10.dp)).background(if (day in 1..count && date == dayMillis) Red else Color.Transparent).clickable(enabled = valid) { date = dayMillis; time = "" }, contentAlignment = Alignment.Center) {
                                         if (day in 1..count) Text("$day", fontSize = 12.sp, color = if (date == dayMillis) Color.White else if (valid) Ink else Line)
                                     }
@@ -89,6 +89,8 @@ fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: Strin
                         }
                     }
                     Heading("Horarios disponibles", "Con ${barbers[barber].name} · ${services[service].minutes} minutos")
+                    if (isClosedDay(date)) Note("La barbería descansa este día. Elige otra fecha.", "calendar")
+                    if (!barbers[barber].active) Note("${barbers[barber].name} no está recibiendo reservas. Vuelve al paso 1 y elige otro barbero.", "user")
                     timeSlots.chunked(3).forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { row.forEach { slot ->
                         val available = state.slotAvailable(date, slot, barber, service, editId)
                         OutlinedButton({ time = slot }, Modifier.weight(1f).height(44.dp), enabled = available, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, if (time == slot) Red else Line), colors = ButtonDefaults.outlinedButtonColors(containerColor = if (time == slot) Red else Color.White, contentColor = if (time == slot) Color.White else Ink), contentPadding = PaddingValues(0.dp)) { Text(slot, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
@@ -136,7 +138,7 @@ fun AppointmentScreen(state: FreshCutState, book: () -> Unit, reschedule: (Appoi
     var tab by rememberSaveable { mutableStateOf("Próximas") }
     var cancelId by remember { mutableStateOf<String?>(null) }
     val now = System.currentTimeMillis()
-    val items = state.appointments.filter { (it.cancelled || appointmentTime(it.date, it.time) < now) == (tab == "Historial") }.sortedBy { appointmentTime(it.date, it.time) }
+    val items = state.myAppointments.filter { (it.cancelled || appointmentTime(it.date, it.time) < now) == (tab == "Historial") }.sortedBy { appointmentTime(it.date, it.time) }
     Column(Modifier.fillMaxSize()) {
         ScreenHeader("Mis citas", action = { IconAction("plus", "Agendar nueva cita", book) })
         Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {

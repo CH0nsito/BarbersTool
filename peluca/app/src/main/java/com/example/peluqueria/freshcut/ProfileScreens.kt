@@ -33,7 +33,7 @@ fun ProfileScreen(state: FreshCutState, navigate: (String) -> Unit, logout: () -
             Spacer(Modifier.height(22.dp))
             CardSurface(Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth()) {
-                    listOf(Triple("calendar", "Citas", state.appointments.count { !it.cancelled }), Triple("heart", "Favoritos", state.favorites.size), Triple("bookmark", "Guardados", state.savedPosts.size)).forEachIndexed { i, (icon, label, count) ->
+                    listOf(Triple("calendar", "Citas", state.myAppointments.count { !it.cancelled }), Triple("heart", "Favoritos", state.favorites.size), Triple("bookmark", "Guardados", state.savedPosts.size)).forEachIndexed { i, (icon, label, count) ->
                         Column(Modifier.weight(1f).clickable { navigate(listOf("appointments", "favorites", "saved")[i]) }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) { Glyph(icon, if (i == 1) Red else Navy); Text("$count", fontSize = 19.sp, fontWeight = FontWeight.Bold); Text(label, color = Muted, fontSize = 11.sp) }
                         if (i < 2) VerticalDivider(Modifier.height(65.dp), color = Line)
                     }
@@ -56,7 +56,7 @@ fun BarbersScreen(select: (Int) -> Unit, back: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Text("Buenas manos. Grandes resultados.", color = Muted, fontSize = 14.sp)
             barbers.forEachIndexed { i, barber ->
-                CardSurface(Modifier.fillMaxWidth().clickable { select(i) }) {
+                if (barber.active) CardSurface(Modifier.fillMaxWidth().clickable { select(i) }) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         Photo(barber.photo, Modifier.size(72.dp).clip(RoundedCornerShape(16.dp)))
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) { Text(barber.name, fontWeight = FontWeight.Bold, fontSize = 17.sp); Text(barber.specialty, color = Muted, fontSize = 12.sp); Text("★ ${barber.rating} · Ver perfil", color = Navy, fontSize = 12.sp) }

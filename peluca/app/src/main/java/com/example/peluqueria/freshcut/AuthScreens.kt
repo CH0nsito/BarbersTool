@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun WelcomeScreen(onStart: () -> Unit, onDemo: () -> Unit) {
+fun WelcomeScreen(onStart: () -> Unit, onDemo: () -> Unit, onOwner: () -> Unit = {}) {
     Box(Modifier.fillMaxSize().background(Navy)) {
         Box(Modifier.fillMaxWidth().aspectRatio(.85f).align(Alignment.Center)) {
             Photo(0, Modifier.fillMaxSize())
@@ -39,6 +39,7 @@ fun WelcomeScreen(onStart: () -> Unit, onDemo: () -> Unit) {
             Spacer(Modifier.height(28.dp))
             PrimaryButton("Comenzar", onStart, red = true)
             TextButton(onDemo) { Text("Explorar demostración", color = Color.White, fontSize = 13.sp) }
+            TextButton(onOwner) { Text("¿Tienes una barbería? Acceso para el negocio", color = Color(0xFFD9B89A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
         }
     }
 }
@@ -66,6 +67,7 @@ fun AuthScreen(mode: String, state: FreshCutState, navigate: (String) -> Unit, b
             Spacer(Modifier.height(5.dp)); Brand(); Spacer(Modifier.height(16.dp))
             Text(if (recover) "Recupera tu acceso" else if (register) "Crea tu cuenta" else "Qué bueno verte", fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.8).sp)
             Text(if (recover) "Ingresa tu correo para continuar." else if (register) "Tu próximo gran corte comienza aquí." else "Inicia sesión y encuentra tu próximo estilo.", color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
+            if (mode == "login") TextButton({ navigate("owner-login") }) { Text("Soy dueño de la barbería", color = Navy, fontSize = 16.sp, fontWeight = FontWeight.Bold) }
             Spacer(Modifier.height(6.dp))
             if (register) InputField(name, { name = it; error = "" }, "Nombre completo", "user")
             InputField(email, { email = it; error = "" }, "Correo electrónico", "mail", email = true)

@@ -21,6 +21,13 @@ import kotlinx.coroutines.launch
 fun FreshCutApp() {
     val context = LocalContext.current
     val state = remember { FreshCutState(context.applicationContext) }
+    // El dueño con sesión abierta ve su panel; cualquier otro caso, la app del cliente.
+    if (state.ownerSignedIn) OwnerApp(state) else ClientApp(state)
+}
+
+@Composable
+fun ClientApp(state: FreshCutState) {
+    val context = LocalContext.current
     var history by rememberSaveable { mutableStateOf(if (state.signedIn) "home" else "welcome") }
     val route = history.substringAfterLast('|')
     DisposableEffect(route == "welcome") {
@@ -34,7 +41,7 @@ fun FreshCutApp() {
     }
     val rootTabs = listOf("home", "cuts", "popular", "appointments", "profile")
     val showTabs = route in rootTabs
-    val auth = route in listOf("welcome", "login", "register", "recover")
+    val auth = route in listOf("welcome", "login", "register", "recover", "owner-login")
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val message: (String) -> Unit = { text -> scope.launch { snackbar.showSnackbar(text, withDismissAction = true) } }
@@ -70,7 +77,8 @@ fun FreshCutApp() {
     ) { inner ->
         Box(Modifier.fillMaxSize().padding(inner).background(if (auth && route != "welcome") Color.White else Paper)) {
             when {
-                route == "welcome" -> WelcomeScreen({ navigate("login") }, { state.login("David Iram", "david@ejemplo.com"); history = "home" })
+                route == "welcome" -> WelcomeScreen({ navigate("login") }, { state.login("David Iram", "david@ejemplo.com"); history = "home" }, { navigate("owner-login") })
+                route == "owner-login" -> OwnerLoginScreen(state, back)
                 auth -> AuthScreen(route, state, navigate, back, { history = "home" }, message)
                 route == "home" -> HomeScreen(state, navigate, selectCut)
                 route == "cuts" || route == "favorites" -> CatalogScreen(state, route == "favorites", selectCut, back)

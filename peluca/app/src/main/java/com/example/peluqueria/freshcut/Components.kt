@@ -63,7 +63,15 @@ private val iconPaths = mapOf(
     "logout" to "M10 3H3V21H10M8 12H22M17 7L22 12L17 17",
     "edit" to "M4 16L16 4L20 8L8 20L3 21ZM14 6L18 10",
     "plus" to "M12 4V20M4 12H20",
-    "pin" to "M12 22C9 17 4 13 4 9A8 8 0 0 1 20 9C20 13 15 18 12 22M12 6A3 3 0 1 0 12 12A3 3 0 1 0 12 6"
+    "pin" to "M12 22C9 17 4 13 4 9A8 8 0 0 1 20 9C20 13 15 18 12 22M12 6A3 3 0 1 0 12 12A3 3 0 1 0 12 6",
+    // Iconos del panel del dueño
+    "chart" to "M3 21H21M6 17V11M11 17V5M16 17V9M21 17V13",
+    "store" to "M3 9L5 4H19L21 9ZM4 9V21H20V9M9 21V15H15V21",
+    "users" to "M9 4A3.5 3.5 0 1 0 9 11A3.5 3.5 0 1 0 9 4M2 20C2 13 16 13 16 20M16 4A3.5 3.5 0 0 1 16 11M18 14C21 15 22 17 22 20",
+    "money" to "M2 6H22V18H2ZM12 9A3 3 0 1 0 12 15A3 3 0 1 0 12 9M5 9H6M18 15H19",
+    "phone" to "M5 3H9L11 8L8 10C9 13 11 15 14 16L16 13L21 15V19Q21 21 19 21C10 21 3 14 3 5Q3 3 5 3Z",
+    "trend" to "M3 17L9 11L13 15L21 7M15 7H21V13",
+    "minus" to "M4 12H20"
 )
 @Composable
 fun Glyph(name: String, color: Color = Ink, size: Dp = 22.dp, filled: Boolean = false) {
