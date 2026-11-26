@@ -2,6 +2,18 @@ package com.example.peluqueria.freshcut
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.LocalContext
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collectLatest
+import android.os.SystemClock
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -114,30 +126,104 @@ fun DetailScreen(cut: Cut, state: FreshCutState, back: () -> Unit, book: () -> U
 }
 @Composable
 fun PopularScreen(state: FreshCutState, selectCut: (Int) -> Unit, message: (String) -> Unit, savedOnly: Boolean = false, back: () -> Unit = {}) {
-    var filter by rememberSaveable { mutableStateOf("Tendencia") }
-    var commentPost by remember { mutableStateOf<Int?>(null) }
+    var filter by rememberSaveable { mutableStateOf("Para ti") }
+    var commentPost by remember { mutableStateOf<FeedPost?>(null) }
     var comment by rememberSaveable { mutableStateOf("") }
+    var why by remember { mutableStateOf<String?>(null) }
+    val listState = rememberLazyListState()
+    val mode = if (savedOnly) "Guardados" else filter
+    LaunchedEffect(mode) { state.loadFeed(mode) }
     Column(Modifier.fillMaxSize()) {
-        ScreenHeader(if (savedOnly) "Guardados" else "Populares", if (savedOnly) back else null, action = { Glyph("flame", Red, 27.dp); Spacer(Modifier.width(18.dp)) })
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (!savedOnly) ChipRow(listOf("Tendencia", "Recientes", "Más gustados"), filter, { filter = it })
-            val order = when (filter) { "Recientes" -> listOf(3, 2, 0); "Más gustados" -> listOf(0, 3, 2); else -> listOf(0, 2, 3) }.filter { !savedOnly || it in state.savedPosts }
-            if (order.isEmpty()) EmptyState("Guarda tu inspiración", "Usa el marcador de una publicación para encontrarla aquí.", "bookmark")
-            order.forEachIndexed { index, id ->
+        ScreenHeader(if (savedOnly) "Guardados" else "Descubre tu estilo", if (savedOnly) back else null,
+            action = { TextButton({ state.loadFeed(mode) }, enabled = !state.feedBusy) { Text("Actualizar", fontSize = 12.sp) } })
+        if (!savedOnly) Box(Modifier.padding(horizontal = 20.dp)) { ChipRow(listOf("Para ti", "Recientes", "Más gustados"), filter, { filter = it }) }
+        if (state.feedBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        LazyColumn(state = listState, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            if (state.feed.isEmpty() && !state.feedBusy) item {
+                EmptyState(if (savedOnly) "Guarda tu inspiración" else "Un nuevo comienzo", if (savedOnly) "Usa el marcador de una publicación para encontrarla aquí." else "Actualiza el feed o publica tu primer estilo desde el perfil.", "bookmark")
+            }
+            items(state.feed, key = { it.id }) { post ->
+                PostExposure(post, listState, state)
                 CardSurface(Modifier.fillMaxWidth()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) { Photo(barbers[index].photo, Modifier.size(36.dp).clip(CircleShape)); Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(barbers[index].name, fontSize = 13.sp, fontWeight = FontWeight.Bold); Text("Hace ${index + 1} días · FreshCut", color = Muted, fontSize = 10.sp) }; Glyph("cut", Navy, 19.dp) }
-                    Spacer(Modifier.height(13.dp)); Photo(cuts[id].photo, Modifier.fillMaxWidth().height(255.dp).clip(RoundedCornerShape(12.dp)).clickable { selectCut(id) }, cuts[id].name)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconAction("heart", "Me gusta", { state.togglePost(id) }, Red, id in state.likedPosts); Text("${listOf(428, 312, 286)[index] + if (id in state.likedPosts) 1 else 0}", fontSize = 12.sp)
-                        IconAction("comment", "Comentar", { commentPost = id }); Text("${32 + index * 8}", fontSize = 12.sp)
-                        Spacer(Modifier.weight(1f)); IconAction("bookmark", "Guardar publicación", { state.togglePost(id, true) }, Navy, id in state.savedPosts)
+                        Photo(post.cut, Modifier.size(36.dp).clip(CircleShape))
+                        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                            Text(post.author, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(dayLabel(post.created), color = Muted, fontSize = 10.sp)
+                        }
+                        IconAction("help", "Por qué veo esta publicación", { why = post.reason })
                     }
-                    Text(cuts[id].name + " · Textura y actitud", fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    Text("Detalles que hacen la diferencia. Encuentra tu próxima versión. #FreshCut #${cuts[id].category}", color = Muted, fontSize = 12.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp))
+                    Spacer(Modifier.height(12.dp))
+                    Photo(cuts[post.cut].photo, Modifier.fillMaxWidth().height(250.dp).clip(RoundedCornerShape(12.dp)).clickable {
+                        state.event(post.id, post.cut, "open"); selectCut(post.cut)
+                    }, cuts[post.cut].name)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconAction("heart", "Me gusta", { state.togglePost(post.id) }, Red, post.id in state.likedPosts)
+                        Text("${post.likes}", fontSize = 12.sp)
+                        IconAction("comment", "Ver comentarios", { commentPost = post; state.loadComments(post.id) })
+                        Text("${post.comments}", fontSize = 12.sp)
+                        Spacer(Modifier.weight(1f))
+                        IconAction("bookmark", "Guardar publicación", { state.togglePost(post.id, true) }, Navy, post.id in state.savedPosts)
+                    }
+                    Text(cuts[post.cut].name, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    Text(post.body, color = Muted, fontSize = 13.sp, lineHeight = 20.sp, modifier = Modifier.padding(top = 6.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(post.reason, Modifier.weight(1f), color = Navy, fontSize = 10.sp)
+                        TextButton({ state.hidePost(post) }) { Text("No me interesa", color = Muted, fontSize = 10.sp) }
+                    }
                 }
             }
-            Spacer(Modifier.height(12.dp))
         }
     }
-    if (commentPost != null) AlertDialog(onDismissRequest = { commentPost = null }, title = { Text("Deja tu comentario") }, text = { Column { Text("Vista de demostración: tu comentario no se publicará en una red.", color = Muted, fontSize = 12.sp); OutlinedTextField(comment, { comment = it }, label = { Text("Tu comentario") }) } }, confirmButton = { TextButton({ message("Comentario de demostración recibido: ${comment.trim()}"); comment = ""; commentPost = null }, enabled = comment.isNotBlank()) { Text("Comentar") } }, dismissButton = { TextButton({ commentPost = null }) { Text("Cancelar") } })
+    if (why != null) AlertDialog(onDismissRequest = { why = null }, title = { Text("Por qué aparece") }, text = {
+        Text("${why}\n\nPara ti combina tus favoritos, likes, guardados, reservas y el tiempo que miras las publicaciones. También incluye novedades y estilos diferentes. Puedes borrar vistas y ocultamientos desde tu perfil.")
+    }, confirmButton = { TextButton({ why = null }) { Text("Entendido") } })
+    if (commentPost != null) AlertDialog(onDismissRequest = { commentPost = null }, title = { Text("Comentarios") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (state.postComments.isEmpty()) Text("Sé el primero en comentar.", color = Muted, fontSize = 12.sp)
+                state.postComments.forEach { Text(it, fontSize = 13.sp) }
+            }
+            OutlinedTextField(comment, { if (it.length <= 500) comment = it }, label = { Text("Tu comentario") }, maxLines = 3)
+        }
+    }, confirmButton = { TextButton({ commentPost?.let { post -> state.comment(post.id, comment.trim()) { comment = ""; if (commentPost?.id == post.id) state.loadComments(post.id) } } }, enabled = comment.isNotBlank() && !state.busy) { Text("Publicar") } }, dismissButton = { TextButton({ commentPost = null }) { Text("Cerrar") } })
+}
+
+/** Count only foreground exposure with >= 60% of the card actually visible. */
+@Composable
+private fun PostExposure(post: FeedPost, list: LazyListState, state: FreshCutState) {
+    val lifecycle = (LocalContext.current as ComponentActivity).lifecycle
+    var foreground by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, _ -> foreground = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(post.id, foreground) {
+        if (!foreground) return@LaunchedEffect
+        snapshotFlow {
+            val layout = list.layoutInfo
+            val item = layout.visibleItemsInfo.find { it.key == post.id }
+            if (item == null || item.size == 0) false else {
+                val visible = minOf(item.offset + item.size, layout.viewportEndOffset) - maxOf(item.offset, layout.viewportStartOffset)
+                visible.toFloat() / minOf(item.size, layout.viewportEndOffset - layout.viewportStartOffset).coerceAtLeast(1) >= .6f
+            }
+        }.distinctUntilChanged().collectLatest { visible ->
+            if (visible) {
+                val start = SystemClock.elapsedRealtime()
+                var sent = false
+                try {
+                    delay(10000)
+                    state.event(post.id, post.cut, "view", 10.0); sent = true
+                    delay(Long.MAX_VALUE)
+                } finally {
+                    if (!sent) {
+                        val seconds = (SystemClock.elapsedRealtime() - start) / 1000.0
+                        if (seconds >= 2) state.event(post.id, post.cut, "view", seconds.coerceAtMost(10.0))
+                        else if (seconds >= .4) state.event(post.id, post.cut, "skip")
+                    }
+                }
+            }
+        }
+    }
 }

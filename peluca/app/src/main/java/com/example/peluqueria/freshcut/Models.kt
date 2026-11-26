@@ -8,7 +8,9 @@ import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
-import kotlin.random.Random
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private val spanish = Locale.forLanguageTag("es-MX")
 fun dayLabel(millis: Long, pattern: String = "EEE, d 'de' MMM"): String = SimpleDateFormat(pattern, spanish).format(millis)
@@ -48,140 +50,204 @@ fun firstActiveBarber(): Int = barbers.indexOfFirst { it.active }.coerceAtLeast(
 /** status: "" pendiente, "done" atendida, "noshow" no asistió. clientEmail vacío = cita creada por el negocio. */
 data class Appointment(
     val id: String, val service: Int, val date: Long, val time: String, val barber: Int, val cut: Int, val cancelled: Boolean = false,
-    val client: String = "", val phone: String = "", val clientEmail: String = "", val status: String = ""
+    val client: String = "", val phone: String = "", val clientEmail: String = "", val status: String = "",
+    val serviceName: String = services[service].name,
+    val serviceMinutes: Int = services[service].minutes,
+    val servicePrice: Int = services[service].price,
+    val clientId: String = "", val demo: Boolean = false
 ) {
     val start: Long get() = appointmentTime(date, time)
     /** Cuenta para ingresos: no cancelada y el cliente sí asistió (o aún no ocurre). */
     val billable: Boolean get() = !cancelled && status != "noshow"
 }
 
+data class FeedPost(val id: Int, val cut: Int, val author: String, val body: String, val created: Long, val likes: Int, val comments: Int, val reason: String)
+
+/** The backend is the source of truth. Old demo preferences are intentionally not imported. */
 class FreshCutState(context: Context) {
-    private val prefs = context.getSharedPreferences("freshcut_local", Context.MODE_PRIVATE)
-    var signedIn by mutableStateOf(prefs.getBoolean("signedIn", false)); private set
-    var name by mutableStateOf(prefs.getString("name", "David Iram") ?: "David Iram"); private set
-    var email by mutableStateOf(prefs.getString("email", "david@ejemplo.com") ?: "david@ejemplo.com"); private set
-    var reminders by mutableStateOf(prefs.getBoolean("reminders", true)); private set
-    var ownerSignedIn by mutableStateOf(prefs.getBoolean("ownerSignedIn", false)); private set
-    var ownerEmail by mutableStateOf(prefs.getString("ownerEmail", "dueno@freshcut.mx") ?: "dueno@freshcut.mx"); private set
-    val favorites = mutableStateListOf<Int>().apply { addAll(prefs.getStringSet("favorites", emptySet()).orEmpty().mapNotNull { it.toIntOrNull() }) }
+    private val prefs = context.getSharedPreferences("freshcut_backend_v1", Context.MODE_PRIVATE)
+    private val vault = SessionVault(context)
+    private val api = BackendClient().apply { baseUrl = prefs.getString("url", "http://127.0.0.1:8080")!!; token = vault.read() }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val lock = Mutex()
+    var serverUrl by mutableStateOf(api.baseUrl); private set
+    var signedIn by mutableStateOf(api.token.isNotEmpty()); private set
+    var ownerSignedIn by mutableStateOf(signedIn && prefs.getString("role", "") == "owner"); private set
+    var name by mutableStateOf(prefs.getString("name", "Invitado")!!); private set
+    var email by mutableStateOf(prefs.getString("email", "")!!); private set
+    var ownerEmail by mutableStateOf(email); private set
+    var userId by mutableStateOf(prefs.getString("id", "")!!); private set
+    var reminders by mutableStateOf(false); private set
+    var busy by mutableStateOf(false); private set
+    var connected by mutableStateOf(false); private set
+    var error by mutableStateOf<String?>(null)
+    var showConnection by mutableStateOf(false)
+    var connectionMessage by mutableStateOf("Conectando con el servidor…"); private set
+    val favorites = mutableStateListOf<Int>()
     val likedPosts = mutableStateListOf<Int>()
     val savedPosts = mutableStateListOf<Int>()
     val appointments = mutableStateListOf<Appointment>()
     val publications = mutableStateListOf<String>()
-    /** Citas del cliente con sesión iniciada (excluye las que agenda el negocio para otros clientes). */
-    val myAppointments: List<Appointment> get() = appointments.filter { it.clientEmail == email }
-    init {
-        runCatching { loadCatalog() }
-        runCatching {
-            val array = JSONArray(prefs.getString("appointments", "[]"))
+    val feed = mutableStateListOf<FeedPost>()
+    private var availabilityJob: Job? = null
+    val availableSlots = mutableStateListOf<String>()
+    var availabilityBusy by mutableStateOf(false); private set
+    private var feedJob: Job? = null
+    val postComments = mutableStateListOf<String>()
+    var feedMode by mutableStateOf("Para ti"); private set
+    var feedBusy by mutableStateOf(false); private set
+    val myAppointments: List<Appointment> get() = appointments.filter { it.clientId == userId && userId.isNotEmpty() }
+    val hasDemoData: Boolean get() = appointments.any { it.demo }
+
+    private fun handleError(e: Exception, silent: Boolean = false) {
+        if (e is CancellationException) throw e
+        if ((e as? BackendException)?.status == 401) clearSession()
+        if ((e as? BackendException)?.status == 0) { connected = false; connectionMessage = "Sin conexión · no se han guardado cambios" }
+        if (!silent) error = e.message ?: "No se pudo completar la operación."
+    }
+    private fun perform(onSuccess: () -> Unit = {}, block: suspend () -> Unit) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            try { lock.withLock { block() }; onSuccess() }
+            catch (e: Exception) { handleError(e) }
+            finally { busy = false }
+        }
+    }
+    private suspend fun loadSnapshot() {
+        val data = api.request("GET", if (api.token.isEmpty()) "/v1/catalog" else "/v1/snapshot")
+        applyCatalog(data)
+        data.optJSONObject("user")?.let { applyUser(it) }
+        if (api.token.isNotEmpty()) {
+            appointments.clear()
+            val array = data.getJSONArray("appointments")
             for (i in 0 until array.length()) {
                 val o = array.getJSONObject(i)
-                appointments.add(Appointment(
-                    o.getString("id"), o.getInt("service").coerceIn(0, services.lastIndex), o.getLong("date"), o.getString("time"), o.getInt("barber").coerceIn(0, barbers.lastIndex), o.optInt("cut", 0), o.optBoolean("cancelled"),
-                    // Las citas guardadas antes de existir el panel del dueño pertenecen al cliente local.
-                    o.optString("client", name), o.optString("phone", ""), o.optString("clientEmail", email), o.optString("status", "")
-                ))
+                appointments.add(Appointment(o.getString("id"), o.getInt("service"), o.getLong("date"), o.getString("time"), o.getInt("barber"), o.getInt("cut"), o.getBoolean("cancelled"), o.getString("client"), o.getString("phone"), o.getString("clientEmail"), o.getString("status"), o.getString("serviceName"), o.getInt("serviceMinutes"), o.getInt("servicePrice"), o.getString("clientId"), o.getBoolean("demo")))
             }
-            val posts = JSONArray(prefs.getString("publications", "[]"))
-            for (i in 0 until posts.length()) publications.add(posts.getString(i))
+            fun ints(key: String, target: MutableList<Int>) { target.clear(); val a = data.getJSONArray(key); for (i in 0 until a.length()) target.add(a.getInt(i)) }
+            ints("favorites", favorites); ints("likedPosts", likedPosts); ints("savedPosts", savedPosts)
+            publications.clear(); val posts = data.getJSONArray("publications"); for (i in 0 until posts.length()) publications.add(posts.getString(i))
         }
-        likedPosts.addAll(prefs.getStringSet("likes", emptySet()).orEmpty().mapNotNull { it.toIntOrNull() })
-        savedPosts.addAll(prefs.getStringSet("saved", emptySet()).orEmpty().mapNotNull { it.toIntOrNull() })
+        connected = true; connectionMessage = "Conectado · ${serverUrl.substringAfter("://")}"
     }
-    fun login(userName: String, userEmail: String) {
-        name = userName.ifBlank { "David Iram" }; email = userEmail; signedIn = true
-        prefs.edit().putBoolean("signedIn", true).putString("name", name).putString("email", email).apply()
+    private fun applyCatalog(data: JSONObject) {
+        services.clear(); val s = data.getJSONArray("services")
+        for (i in 0 until s.length()) { val o=s.getJSONObject(i); services.add(Service(o.getString("name"),o.getInt("minutes"),o.getInt("price"),o.getInt("photo"),o.getBoolean("active"))) }
+        barbers.clear(); val b = data.getJSONArray("barbers")
+        for (i in 0 until b.length()) { val o=b.getJSONObject(i); barbers.add(Barber(o.getString("name"),o.getString("specialty"),o.getInt("photo"),o.getString("rating"),o.getBoolean("active"))) }
+        openHour=data.getInt("openHour");closeHour=data.getInt("closeHour");closedWeekdays.clear()
+        val days=data.getJSONArray("closedWeekdays");for(i in 0 until days.length())closedWeekdays.add(days.getInt(i))
     }
-    fun logout() { signedIn = false; prefs.edit().putBoolean("signedIn", false).apply() }
-    fun updateProfile(userName: String, userEmail: String) { name = userName; email = userEmail; prefs.edit().putString("name", name).putString("email", email).apply() }
-    fun toggleFavorite(id: Int) { if (!favorites.remove(id)) favorites.add(id); prefs.edit().putStringSet("favorites", favorites.map { it.toString() }.toSet()).apply() }
-    fun togglePost(id: Int, saved: Boolean = false) {
-        val list = if (saved) savedPosts else likedPosts
-        if (!list.remove(id)) list.add(id)
-        prefs.edit().putStringSet(if (saved) "saved" else "likes", list.map { it.toString() }.toSet()).apply()
+    private fun applyUser(u: JSONObject) {
+        userId=u.getString("id");name=u.getString("name");email=u.getString("email");ownerEmail=email
+        signedIn=true;ownerSignedIn=u.getString("role")=="owner";reminders=u.getBoolean("reminders")
+        prefs.edit().putString("id",userId).putString("name",name).putString("email",email).putString("role",u.getString("role")).apply()
     }
-    fun setReminder(value: Boolean) { reminders = value; prefs.edit().putBoolean("reminders", value).apply() }
-    fun publish(text: String) { publications.add(0, text); prefs.edit().putString("publications", JSONArray(publications.toList()).toString()).apply() }
-    /** Reserva hecha por el cliente desde la app: se asocia a su nombre y correo. */
-    fun saveAppointment(appointment: Appointment) = saveOwnerAppointment(appointment.copy(client = name, clientEmail = email, status = ""))
-    /** Reserva hecha por el negocio (cliente en mostrador, por teléfono…): se guarda tal cual. */
-    fun saveOwnerAppointment(appointment: Appointment) {
-        appointments.removeAll { it.id == appointment.id }; appointments.add(appointment); persistAppointments()
+    fun refresh(silent: Boolean = false) {
+        if (busy || lock.isLocked) return
+        scope.launch { try { lock.withLock { loadSnapshot() } } catch(e: Exception) { handleError(e,silent) } }
     }
-    fun cancel(id: String) { val i = appointments.indexOfFirst { it.id == id }; if (i >= 0) { appointments[i] = appointments[i].copy(cancelled = true); persistAppointments() } }
-    fun setStatus(id: String, status: String) { val i = appointments.indexOfFirst { it.id == id }; if (i >= 0) { appointments[i] = appointments[i].copy(status = status); persistAppointments() } }
-    fun slotAvailable(date: Long, time: String, barber: Int, service: Int, except: String = ""): Boolean {
-        if (isClosedDay(date) || !barbers[barber].active) return false
-        val start = appointmentTime(date, time)
-        val end = start + services[service].minutes * 60_000L
-        return start > System.currentTimeMillis() && appointments.none {
-            val other = appointmentTime(it.date, it.time)
-            !it.cancelled && it.id != except && it.barber == barber && start < other + services[it.service].minutes * 60_000L && end > other
+    fun configureServer(url: String) {
+        val trimmed=url.trim().trimEnd('/')
+        val parsed=runCatching { java.net.URI(trimmed) }.getOrNull()
+        if(parsed?.scheme !in listOf("http","https") || parsed?.host.isNullOrBlank() || !parsed?.rawUserInfo.isNullOrEmpty() || !parsed?.rawQuery.isNullOrEmpty() || !parsed?.rawFragment.isNullOrEmpty() || !parsed?.path.isNullOrEmpty()) { error="Usa una dirección como http://192.168.1.50:8080, sin rutas ni credenciales."; return }
+        if(busy || lock.isLocked) { error="Espera a que termine la operación actual."; return }
+        if(trimmed!=serverUrl) {clearSession();api.baseUrl=trimmed;serverUrl=trimmed;prefs.edit().putString("url",trimmed).apply()}
+        showConnection=false;refresh()
+    }
+    fun login(userName: String, userEmail: String, password: String, register: Boolean = false, owner: Boolean = false, onSuccess: () -> Unit = {}) = perform(onSuccess) {
+        val response=api.request("POST",if(register)"/v1/auth/register" else "/v1/auth/login",JSONObject().put("name",userName).put("email",userEmail).put("password",password).put("owner",owner))
+        api.token=response.getString("token");vault.write(api.token);applyUser(response.getJSONObject("user"));loadSnapshot()
+    }
+    fun ownerLogin(userEmail: String, password: String) = login("",userEmail,password,owner=true)
+    private fun clearSession() {
+        feedJob?.cancel();availabilityJob?.cancel();availableSlots.clear();postComments.clear()
+        api.token="";vault.write("");signedIn=false;ownerSignedIn=false;userId="";name="Invitado";email="";ownerEmail=""
+        appointments.clear();favorites.clear();likedPosts.clear();savedPosts.clear();publications.clear();feed.clear()
+        prefs.edit().remove("role").remove("id").remove("name").remove("email").apply()
+    }
+    fun logout() = perform { api.request("POST","/v1/auth/logout",JSONObject());clearSession();loadSnapshot() }
+    fun ownerLogout() = logout()
+    fun deleteAccount(onSuccess: () -> Unit) = perform(onSuccess) { api.request("DELETE","/v1/me");clearSession();loadSnapshot() }
+    private fun write(method: String, path: String, body: JSONObject, onSuccess: () -> Unit = {}) {
+        if (!signedIn) { error = "Inicia sesión o crea una cuenta para guardar cambios."; return }
+        perform(onSuccess) { api.request(method,path,body);loadSnapshot() }
+    }
+    fun updateProfile(userName: String,userEmail: String,onSuccess: () -> Unit = {}) = write("PUT","/v1/me",JSONObject().put("name",userName).put("email",userEmail),onSuccess)
+    fun toggleFavorite(id: Int) = write("PUT","/v1/favorites",JSONObject().put("cut",id).put("active",id !in favorites))
+    fun togglePost(id: Int,saved: Boolean=false) {
+        val active = id !in if(saved)savedPosts else likedPosts
+        write("PUT","/v1/reactions",JSONObject().put("post",id).put("kind",if(saved)"save" else "like").put("active",active)) {
+            val index=feed.indexOfFirst { it.id==id }
+            if(index>=0 && !saved) feed[index]=feed[index].copy(likes=(feed[index].likes+if(active)1 else -1).coerceAtLeast(0))
+            if(saved && !active && feedMode=="Guardados")feed.removeAll {it.id==id}
         }
     }
-    private fun persistAppointments() {
-        val array = JSONArray()
-        appointments.forEach {
-            array.put(JSONObject().put("id", it.id).put("service", it.service).put("date", it.date).put("time", it.time).put("barber", it.barber).put("cut", it.cut).put("cancelled", it.cancelled)
-                .put("client", it.client).put("phone", it.phone).put("clientEmail", it.clientEmail).put("status", it.status))
+    fun setReminder(value: Boolean) = write("PUT","/v1/preferences",JSONObject().put("reminders",value))
+    fun publish(text: String, cut: Int=0, onSuccess: () -> Unit = {}) = write("POST","/v1/posts",JSONObject().put("body",text).put("cut",cut),onSuccess)
+    private fun appointmentBody(a: Appointment) = JSONObject().put("id",a.id).put("service",a.service).put("barber",a.barber).put("day",dayLabel(a.date,"yyyy-MM-dd")).put("time",a.time).put("cut",a.cut).put("client",a.client).put("phone",a.phone)
+    fun saveAppointment(a: Appointment,onSuccess: () -> Unit = {}) = write(if(appointments.any { it.id==a.id })"PUT" else "POST",if(appointments.any { it.id==a.id })"/v1/appointments/${a.id}" else "/v1/appointments",appointmentBody(a),onSuccess)
+    fun saveOwnerAppointment(a: Appointment,onSuccess: () -> Unit = {}) = saveAppointment(a,onSuccess)
+    fun cancel(id: String,onSuccess: () -> Unit = {}) = write("PUT","/v1/appointments/$id",JSONObject().put("action","cancel"),onSuccess)
+    fun setStatus(id: String,status: String,onSuccess: () -> Unit = {}) = write("PUT","/v1/appointments/$id",JSONObject().put("action","status").put("status",status),onSuccess)
+    fun saveService(index: Int,s: Service,onSuccess: () -> Unit = {}) = write("PUT","/v1/owner/services/${if(index in services.indices)index else services.size}",JSONObject().put("name",s.name).put("minutes",s.minutes).put("price",s.price).put("photo",s.photo).put("active",s.active),onSuccess)
+    fun saveBarber(index: Int,b: Barber,onSuccess: () -> Unit = {}) = write("PUT","/v1/owner/barbers/${if(index in barbers.indices)index else barbers.size}",JSONObject().put("name",b.name).put("specialty",b.specialty).put("photo",b.photo).put("active",b.active),onSuccess)
+    fun saveHours(open: Int,close: Int,closed: List<Int>,onSuccess: () -> Unit = {}) = write("PUT","/v1/owner/hours",JSONObject().put("openHour",open).put("closeHour",close).put("closedWeekdays",JSONArray(closed)),onSuccess)
+    fun seedDemo(onSuccess: () -> Unit = {}) = write("POST","/v1/owner/demo",JSONObject(),onSuccess)
+    fun clearDemo(onSuccess: () -> Unit = {}) = write("DELETE","/v1/owner/demo",JSONObject(),onSuccess)
+    fun loadAvailability(date: Long, barber: Int, service: Int, except: String = "") {
+        availabilityJob?.cancel(); availableSlots.clear(); availabilityBusy = true
+        val expectedUser = userId
+        availabilityJob = scope.launch {
+            try {
+                val q = "/v1/availability?day=${dayLabel(date, "yyyy-MM-dd")}&barber=$barber&service=$service&except=$except"
+                val slots = api.request("GET", q).getJSONArray("slots")
+                if (expectedUser == userId) for (i in 0 until slots.length()) availableSlots.add(slots.getString(i))
+            } catch (e: Exception) { handleError(e) } finally { availabilityBusy = false }
         }
-        prefs.edit().putString("appointments", array.toString()).apply()
     }
-
-    // ---------- Panel del dueño ----------
-    fun ownerLogin(userEmail: String) { ownerEmail = userEmail; ownerSignedIn = true; prefs.edit().putBoolean("ownerSignedIn", true).putString("ownerEmail", userEmail).apply() }
-    fun ownerLogout() { ownerSignedIn = false; prefs.edit().putBoolean("ownerSignedIn", false).apply() }
-    fun saveService(index: Int, service: Service) { if (index in services.indices) services[index] = service else services.add(service); persistCatalog() }
-    fun saveBarber(index: Int, barber: Barber) { if (index in barbers.indices) barbers[index] = barber else barbers.add(barber); persistCatalog() }
-    fun saveHours(open: Int, close: Int, closed: List<Int>) {
-        openHour = open; closeHour = close; closedWeekdays.clear(); closedWeekdays.addAll(closed.distinct().sorted()); persistCatalog()
+    fun slotAvailable(date: Long,time: String,barber: Int,service: Int,except: String=""): Boolean {
+        if(service !in services.indices || barber !in barbers.indices || isClosedDay(date) || !barbers[barber].active || !services[service].active || time !in timeSlots)return false
+        val start=appointmentTime(date,time)
+        val duration=appointments.find {it.id==except&&it.service==service}?.serviceMinutes?:services[service].minutes
+        val end=start+duration*60_000L
+        val closing=Calendar.getInstance().apply {timeInMillis=date;set(Calendar.HOUR_OF_DAY,closeHour);set(Calendar.MINUTE,0);set(Calendar.SECOND,0);set(Calendar.MILLISECOND,0)}.timeInMillis
+        return start>System.currentTimeMillis() && end<=closing && appointments.none { !it.cancelled&&it.id!=except&&it.barber==barber&&start<it.start+it.serviceMinutes*60_000L&&end>it.start }
     }
-    private fun loadCatalog() {
-        prefs.getString("services", null)?.let { raw ->
-            val a = JSONArray(raw)
-            val loaded = (0 until a.length()).map { a.getJSONObject(it) }.map { Service(it.getString("name"), it.getInt("minutes"), it.getInt("price"), it.getInt("photo"), it.optBoolean("active", true)) }
-            if (loaded.isNotEmpty()) { services.clear(); services.addAll(loaded) }
+    // Recommendation requests are independent of catalog synchronization.
+    fun loadFeed(mode: String="Para ti") {
+        if(!signedIn)return
+        feedJob?.cancel()
+        val expectedUser=userId
+        feedMode=mode;feedBusy=true
+        feedJob=scope.launch {
+            try {
+                val sort=when(mode){"Recientes"->"recent";"Más gustados"->"popular";"Guardados"->"saved";else->"personal"}
+                val result=api.request("GET","/v1/feed?sort=$sort")
+                val a=result.getJSONArray("posts");val items=mutableListOf<FeedPost>()
+                for(i in 0 until a.length()){val o=a.getJSONObject(i);items.add(FeedPost(o.getInt("id"),o.getInt("cut"),o.getString("author"),o.getString("body"),o.getLong("created"),o.getInt("likes"),o.getInt("comments"),o.getString("reason")))}
+                if(userId==expectedUser) { feed.clear();feed.addAll(items) }
+            }catch(e:Exception){handleError(e)}finally{feedBusy=false}
         }
-        prefs.getString("barbers", null)?.let { raw ->
-            val a = JSONArray(raw)
-            val loaded = (0 until a.length()).map { a.getJSONObject(it) }.map { Barber(it.getString("name"), it.getString("specialty"), it.getInt("photo"), it.getString("rating"), it.optBoolean("active", true)) }
-            if (loaded.isNotEmpty()) { barbers.clear(); barbers.addAll(loaded) }
-        }
-        openHour = prefs.getInt("openHour", 10)
-        closeHour = prefs.getInt("closeHour", 19)
-        closedWeekdays.clear(); closedWeekdays.addAll(prefs.getStringSet("closedWeekdays", emptySet()).orEmpty().mapNotNull { it.toIntOrNull() })
     }
-    private fun persistCatalog() {
-        val s = JSONArray(); services.forEach { s.put(JSONObject().put("name", it.name).put("minutes", it.minutes).put("price", it.price).put("photo", it.photo).put("active", it.active)) }
-        val b = JSONArray(); barbers.forEach { b.put(JSONObject().put("name", it.name).put("specialty", it.specialty).put("photo", it.photo).put("rating", it.rating).put("active", it.active)) }
-        prefs.edit().putString("services", s.toString()).putString("barbers", b.toString()).putInt("openHour", openHour).putInt("closeHour", closeHour)
-            .putStringSet("closedWeekdays", closedWeekdays.map { it.toString() }.toSet()).apply()
+    fun event(post: Int?,cut: Int,kind: String,value: Double=1.0) {
+        if(!signedIn)return
+        val tokenAtStart=api.token
+        scope.launch { try { if(tokenAtStart==api.token)api.request("POST","/v1/events",JSONObject().put("id",java.util.UUID.randomUUID().toString()).put("post",post?:JSONObject.NULL).put("cut",cut).put("kind",kind).put("value",value)) }catch(_:Exception){ /* Exposure telemetry may be dropped offline; do not interrupt browsing. */ } }
     }
-    val hasDemoData: Boolean get() = appointments.any { it.id.startsWith("demo-") }
-    /** Genera citas ficticias de la última semana y los próximos días para explorar el panel. */
-    fun seedDemo() {
-        val random = Random(7)
-        val clients = listOf("Luis Hernández" to "662 118 4502", "Miguel Ángel Soto" to "662 247 9031", "Andrés Navarro" to "662 390 1187", "Jorge Castillo" to "662 455 6720", "Fernando Ruiz" to "662 501 3349",
-            "Ricardo Medina" to "662 612 0985", "Emilio Vargas" to "662 734 2268", "Sebastián Ortiz" to "662 829 5514", "Pablo Reyes" to "662 903 7742", "Iván Morales" to "662 145 8836")
-        val now = System.currentTimeMillis()
-        val generated = mutableListOf<Appointment>()
-        for (offset in -6..4) {
-            val day = nextDay(today(), offset)
-            if (isClosedDay(day)) continue
-            barbers.indices.filter { barbers[it].active }.forEach { barber ->
-                timeSlots.filter { random.nextInt(100) < (if (offset < 0) 55 else 40) }.forEach { slot ->
-                    val (client, phone) = clients[random.nextInt(clients.size)]
-                    val service = services.indices.filter { services[it].active }.let { if (it.isEmpty()) 0 else it[random.nextInt(it.size)] }
-                    val past = appointmentTime(day, slot) < now
-                    val roll = random.nextInt(100)
-                    generated += Appointment("demo-$offset-$barber-$slot", service, day, slot, barber, random.nextInt(cuts.size),
-                        cancelled = roll < 8, client = client, phone = phone, status = if (past && roll >= 8) (if (roll < 14) "noshow" else "done") else "")
-                }
-            }
-        }
-        // Respeta las citas reales: no agrega una de ejemplo donde ya hay otra con el mismo barbero.
-        generated.filter { g -> appointments.none { it.id == g.id || !it.cancelled && it.barber == g.barber && it.date == g.date && it.time == g.time } }.forEach { appointments.add(it) }
-        persistAppointments()
+    fun hidePost(post: FeedPost) = perform {api.request("PUT","/v1/reactions",JSONObject().put("post",post.id).put("kind","hide").put("active",true));feed.removeAll {it.id==post.id}}
+    fun resetRecommendations(onSuccess: () -> Unit = {}) = perform(onSuccess) {api.request("DELETE","/v1/recommendations/history");feed.clear()}
+    fun comment(post: Int,text: String,onSuccess: () -> Unit) = write("POST","/v1/comments",JSONObject().put("post",post).put("body",text)) {
+        val i=feed.indexOfFirst {it.id==post};if(i>=0)feed[i]=feed[i].copy(comments=feed[i].comments+1)
+        onSuccess()
     }
-    fun clearDemo() { appointments.removeAll { it.id.startsWith("demo-") }; persistAppointments() }
+    fun loadComments(post: Int) {
+        postComments.clear()
+        scope.launch { try {
+            val a=api.request("GET","/v1/comments?post=$post").getJSONArray("comments")
+            postComments.clear();for(i in 0 until a.length()){val o=a.getJSONObject(i);postComments.add(o.getString("author")+": "+o.getString("body"))}
+        }catch(e:Exception){handleError(e)} }
+    }
+    fun close() {scope.cancel()}
 }

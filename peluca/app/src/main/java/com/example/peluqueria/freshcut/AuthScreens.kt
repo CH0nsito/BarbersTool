@@ -38,8 +38,8 @@ fun WelcomeScreen(onStart: () -> Unit, onDemo: () -> Unit, onOwner: () -> Unit =
             Text("Encuentra tu estilo y reserva tu próxima cita.\nNosotros nos encargamos del resto.", color = Color.White.copy(alpha = .8f), textAlign = TextAlign.Center, fontSize = 14.sp, lineHeight = 22.sp)
             Spacer(Modifier.height(28.dp))
             PrimaryButton("Comenzar", onStart, red = true)
-            TextButton(onDemo) { Text("Explorar demostración", color = Color.White, fontSize = 13.sp) }
-            TextButton(onOwner) { Text("¿Tienes una barbería? Acceso para el negocio", color = Color(0xFFD9B89A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+            TextButton(onDemo) { Text("Explorar cortes", color = Color.White, fontSize = 13.sp) }
+            TextButton(onOwner) { Text("Acceso del dueño", color = Color(0xFFD9B89A), fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
         }
     }
 }
@@ -79,28 +79,24 @@ fun AuthScreen(mode: String, state: FreshCutState, navigate: (String) -> Unit, b
                 error = when {
                     register && name.trim().length < 2 -> "Escribe tu nombre completo."
                     !Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches() -> "Escribe un correo electrónico válido."
-                    !recover && password.length < 6 -> "La contraseña debe tener al menos 6 caracteres."
+                    !recover && password.length < 8 -> "La contraseña debe tener al menos 8 caracteres."
                     register && password != repeat -> "Las contraseñas no coinciden."
                     else -> ""
                 }
                 if (error.isEmpty()) {
-                    if (recover) message("Demostración: no se envió ningún correo. Puedes entrar con Explorar demostración.")
-                    else { state.login(if (register) name.trim() else state.name, email.trim()); onLogin() }
+                    if (recover) message("En el entorno local, solicita al administrador que restablezca tu contraseña desde la PC. No se envían correos.")
+                    else { state.login(name.trim(), email.trim(), password, register = register, onSuccess = onLogin) }
                 }
-            }, red = register, icon = null)
+            }, red = register, icon = null, enabled = !state.busy)
             if (!register && !recover) TextButton({ navigate("recover") }) { Text("¿Olvidaste tu contraseña?", fontSize = 13.sp) }
             if (!recover) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { HorizontalDivider(Modifier.weight(1f), color = Line); Text("o continúa con", color = Muted, fontSize = 12.sp); HorizontalDivider(Modifier.weight(1f), color = Line) }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    listOf("Google", "Apple").forEach { provider -> OutlinedButton({ message("El acceso con $provider requiere conectar un proveedor. Usa el acceso de demostración.") }, Modifier.weight(1f), shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, Line)) { Text(provider, color = Ink) } }
-                }
                 TextButton({ navigate(if (register) "login" else "register") }) { Text(if (register) "¿Ya tienes cuenta? Inicia sesión" else "¿Aún no tienes cuenta? Regístrate", color = Red, fontSize = 13.sp) }
             }
-            Note("Modo demostración. Usa datos ficticios; no se autentica en un servidor ni se guarda tu contraseña.")
-            TextButton({ state.login("David Iram", "david@ejemplo.com"); onLogin() }) { Text("Explorar demostración", fontWeight = FontWeight.Bold) }
+            Note("Tu cuenta y tus reservas se guardan en el servidor de la barbería. En esta etapa, úsalo con datos de prueba.")
+            TextButton({ state.showConnection = true }) { Text("Configurar conexión", fontWeight = FontWeight.Bold) }
             if (register) TextButton({ terms = true }) { Text("Términos y privacidad", color = Muted, fontSize = 12.sp) }
             Spacer(Modifier.height(20.dp))
         }
     }
-    if (terms) AlertDialog(onDismissRequest = { terms = false }, title = { Text("Tu privacidad") }, text = { Text("FreshCut es una demostración local. El perfil, favoritos y citas se guardan en este dispositivo. No se realizan pagos, envíos de correo ni reservas en una barbería real. Evita introducir datos sensibles.") }, confirmButton = { TextButton({ terms = false }) { Text("Entendido") } })
+    if (terms) AlertDialog(onDismissRequest = { terms = false }, title = { Text("Tu privacidad") }, text = { Text("FreshCut guarda tu cuenta, citas, favoritos y actividad de recomendaciones en el servidor local de la barbería. No se realizan pagos ni envíos de correo. Puedes borrar tu historial de recomendaciones y tu cuenta desde el perfil. Usa datos de prueba durante el desarrollo.") }, confirmButton = { TextButton({ terms = false }) { Text("Entendido") } })
 }

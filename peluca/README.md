@@ -1,33 +1,37 @@
 # FreshCut Barbería
 
-Aplicación Android en español, realizada sobre el proyecto original `Peluqueria` con Kotlin y Jetpack Compose. El módulo, identificador de aplicación (`com.example.peluqueria`), SDK y versiones de Gradle existentes se conservan.
+Aplicación Android Kotlin/Jetpack Compose para una barbería, conectada a un backend propio local con Node.js y SQLite. Mantiene el módulo `app`, el paquete `com.example.peluqueria`, Gradle y SDK existentes.
 
-## Ejecutar
+## Uso actual
 
-Abre esta carpeta en Android Studio, selecciona el módulo **app** y tu teléfono, y pulsa **Run**. El nombre e icono instalados son **FreshCut**.
+1. Inicia el backend siguiendo [backend/README.md](backend/README.md).
+2. Abre FreshCut en el teléfono y revisa la barra **Conectado**.
+3. Crea una cuenta de cliente o entra como dueño con las credenciales privadas de `backend/data/owner-access.txt`.
+4. Usa **Conexión** para elegir USB (`http://127.0.0.1:8080`, con adb reverse) o la dirección de la PC por Wi-Fi.
 
-En la bienvenida, **Explorar demostración** permite entrar directamente. Los formularios de inicio de sesión y registro validan datos ficticios, sin conectarse a un servidor y sin almacenar contraseñas.
+El registro y acceso ahora se validan en el servidor. Las cuentas de demostración antiguas no se convierten automáticamente en usuarios reales. No se almacenan contraseñas en la app.
 
-## Pantallas y flujos
+## Funciones
 
-- Bienvenida, inicio de sesión, registro y recuperación de acceso simulada.
-- Inicio con accesos rápidos, catálogo con búsqueda y categorías, detalle de corte e inspiración.
-- Favoritos, publicaciones populares, me gusta, publicaciones guardadas y comentarios de demostración.
-- Directorio y perfiles de barberos.
-- Reserva: servicio y barbero → calendario y horario → resumen y confirmación.
-- Próximas citas, historial, reprogramación y cancelación con confirmación.
-- Perfil editable, publicaciones locales, preferencias de avisos, pago en barbería y preguntas frecuentes.
+- Cliente: catálogo, favoritos por cuenta, citas sincronizadas, reprogramación, cancelación y perfil.
+- Dueño: agenda, estados de citas, clientes, servicios, barberos, horarios y publicaciones.
+- Reservas protegidas por validación atómica en servidor, con precio/duración guardados por cita.
+- Feed **Para ti** personalizado por preferencias e interacciones, con diversidad, razones, ocultamiento y borrado de actividad.
+- Publicaciones de texto asociadas a los cortes/fotos incluidos, comentarios, likes y guardados reales.
+- Token cifrado en Android; permisos y separación entre cuentas en el backend.
 
-Perfil, sesión, favoritos, publicaciones, preferencias y citas se conservan en almacenamiento local. El calendario usa la fecha del teléfono, impide reservar en el pasado y evita solapamientos de las reservas locales de un barbero.
+La PC debe permanecer encendida con el backend ejecutándose. La app no confirma cambios sin respuesta del servidor. Los datos quedan en `backend/data/`; la demo anterior permanece separada.
 
-No hay backend, autenticación real, pagos, mensajes enviados, reserva remota ni notificaciones del sistema. Los nombres, reseñas, disponibilidad y precios son de demostración. Las fotografías se muestran desde regiones de las dos referencias visuales aportadas, empaquetadas con la app; no requieren internet.
-
-## Compilación
+## Compilar
 
 ```sh
 ./gradlew :app:assembleDebug --offline --console=plain
 ```
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`.
+APK: `app/build/outputs/apk/debug/app-debug.apk`. El SDK de este entorno es `/home/simi/Android/Sdk`.
 
-Se verifican compilación, instalación e inicio en el dispositivo. No se ejecutan pruebas automatizadas ni de instrumentación; la revisión de navegación e interfaz queda a cargo del usuario.
+Se revisa sintaxis, compilación e inicio; no se ejecutan suites, pruebas de instrumentación ni operaciones Git. Las pruebas de interfaz quedan al usuario.
+
+## Límites de esta etapa
+
+Servidor de desarrollo local, sin Firebase ni despliegue en la nube. No hay correo saliente, notificaciones push, pagos, subida de fotos/videos ni modelo neuronal entrenado. El recomendador es un ranking de contenido basado en señales y puntuaciones explicables. La recuperación de contraseña se hace con el comando administrativo documentado. HTTP está habilitado únicamente en debug; la publicación requiere HTTPS e infraestructura adecuada.

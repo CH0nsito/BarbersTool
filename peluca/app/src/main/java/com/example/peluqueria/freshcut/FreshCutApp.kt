@@ -16,13 +16,37 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.lifecycle.Lifecycle
+import androidx.compose.ui.Alignment
 
 @Composable
 fun FreshCutApp() {
     val context = LocalContext.current
     val state = remember { FreshCutState(context.applicationContext) }
-    // El dueño con sesión abierta ve su panel; cualquier otro caso, la app del cliente.
-    if (state.ownerSignedIn) OwnerApp(state) else ClientApp(state)
+    DisposableEffect(state) { onDispose { state.close() } }
+    val lifecycle = (context as ComponentActivity).lifecycle
+    LaunchedEffect(state) {
+        state.refresh(silent = true)
+        while (true) {
+            delay(15000)
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) state.refresh(silent = true)
+        }
+    }
+    Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(state.connectionMessage, Modifier.weight(1f), color = if (state.connected) Navy else Red, fontSize = 10.sp, maxLines = 1)
+            TextButton({ state.showConnection = true }) { Text("Conexión", fontSize = 11.sp) }
+        }
+        if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        Box(Modifier.weight(1f)) {
+            key(state.userId, state.ownerSignedIn) {
+                if (state.ownerSignedIn) OwnerApp(state) else ClientApp(state)
+            }
+        }
+    }
+    if (state.error != null) AlertDialog(onDismissRequest = { state.error = null }, title = { Text("No se completó la operación") }, text = { Text(state.error.orEmpty()) }, confirmButton = { TextButton({ state.error = null }) { Text("Entendido") } })
+    if (state.showConnection) ConnectionDialog(state)
 }
 
 @Composable
@@ -32,8 +56,7 @@ fun ClientApp(state: FreshCutState) {
     val route = history.substringAfterLast('|')
     DisposableEffect(route == "welcome") {
         (context as? ComponentActivity)?.enableEdgeToEdge(
-            statusBarStyle = if (route == "welcome") SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-                else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            statusBarStyle = SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
             navigationBarStyle = if (route == "welcome") SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
                 else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
         )
@@ -47,13 +70,14 @@ fun ClientApp(state: FreshCutState) {
     val message: (String) -> Unit = { text -> scope.launch { snackbar.showSnackbar(text, withDismissAction = true) } }
     val navigate: (String) -> Unit = { target ->
         when {
+            !state.signedIn && (target == "booking" || target.startsWith("booking/") || target in listOf("appointments", "favorites", "profile", "popular", "saved")) -> history += "|login"
             target in rootTabs -> history = target
             target == "booking" -> history += "|booking/-1/0/"
             target != route -> history += "|$target"
         }
     }
     val back: () -> Unit = { history = if ('|' in history) history.substringBeforeLast('|') else if (state.signedIn) "home" else "welcome" }
-    val selectCut: (Int) -> Unit = { navigate("detail/$it") }
+    val selectCut: (Int) -> Unit = { state.event(null, it, "open"); navigate("detail/$it") }
     BackHandler(enabled = route != "welcome" && route != "home") { back() }
     Scaffold(
         modifier = Modifier.fillMaxSize(), containerColor = Paper,
@@ -66,7 +90,7 @@ fun ClientApp(state: FreshCutState) {
                     val titles = listOf("Inicio", "Cortes", "Popular", "Citas", "Perfil")
                     val icons = listOf("home", "cut", "flame", "calendar", "user")
                     rootTabs.forEachIndexed { index, tab -> NavigationBarItem(
-                        selected = route == tab, onClick = { history = tab },
+                        selected = route == tab, onClick = { navigate(tab) },
                         icon = { Glyph(icons[index], if (route == tab) Red else Muted, 22.dp, filled = route == tab && tab == "profile") },
                         label = { Text(titles[index], fontSize = 10.sp, fontWeight = if (route == tab) FontWeight.Bold else FontWeight.Normal) },
                         colors = NavigationBarItemDefaults.colors(selectedTextColor = Red, unselectedTextColor = Muted, indicatorColor = Color(0xFFFFF0F0))
@@ -77,7 +101,7 @@ fun ClientApp(state: FreshCutState) {
     ) { inner ->
         Box(Modifier.fillMaxSize().padding(inner).background(if (auth && route != "welcome") Color.White else Paper)) {
             when {
-                route == "welcome" -> WelcomeScreen({ navigate("login") }, { state.login("David Iram", "david@ejemplo.com"); history = "home" }, { navigate("owner-login") })
+                route == "welcome" -> WelcomeScreen({ navigate("login") }, { history = "home" }, { navigate("owner-login") })
                 route == "owner-login" -> OwnerLoginScreen(state, back)
                 auth -> AuthScreen(route, state, navigate, back, { history = "home" }, message)
                 route == "home" -> HomeScreen(state, navigate, selectCut)
@@ -93,7 +117,7 @@ fun ClientApp(state: FreshCutState) {
                 }
                 route == "success" -> BookingSuccess({ history = "appointments" }, { history = "home" })
                 route == "appointments" -> AppointmentScreen(state, { navigate("booking") }, { item -> navigate("booking/${item.cut}/${item.barber}/${item.id}") })
-                route == "profile" -> ProfileScreen(state, navigate, { state.logout(); history = "welcome" })
+                route == "profile" -> ProfileScreen(state, navigate, { state.logout() })
                 route == "barbers" -> BarbersScreen({ navigate("barber/$it") }, back)
                 route.startsWith("barber/") -> {
                     val id = route.substringAfter('/').toIntOrNull()?.coerceIn(0, barbers.lastIndex) ?: 0
@@ -104,4 +128,16 @@ fun ClientApp(state: FreshCutState) {
             }
         }
     }
+}
+
+@Composable
+private fun ConnectionDialog(state: FreshCutState) {
+    var url by rememberSaveable { mutableStateOf(state.serverUrl) }
+    AlertDialog(onDismissRequest = { state.showConnection = false }, title = { Text("Servidor FreshCut") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("USB: http://127.0.0.1:8080\nWi-Fi: usa la IP de la PC y el puerto 8080. La PC y el servidor deben estar encendidos.", fontSize = 13.sp)
+            OutlinedTextField(url, { url = it }, label = { Text("Dirección del servidor") }, singleLine = true)
+            Text("Cambiar de servidor cierra la sesión. HTTP solo se permite en esta versión de desarrollo.", fontSize = 11.sp, color = Muted)
+        } }, confirmButton = { TextButton({ state.configureServer(url) }, enabled = !state.busy) { Text("Conectar") } },
+        dismissButton = { TextButton({ state.showConnection = false }) { Text("Volver") } })
 }

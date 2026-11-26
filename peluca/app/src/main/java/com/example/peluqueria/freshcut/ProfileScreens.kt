@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun ProfileScreen(state: FreshCutState, navigate: (String) -> Unit, logout: () -> Unit) {
     var confirmLogout by remember { mutableStateOf(false) }
+    var resetActivity by remember { mutableStateOf(false) }
+    var deleteAccount by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Box(Modifier.fillMaxWidth().height(196.dp)) {
             Box(Modifier.fillMaxWidth().height(135.dp).background(Navy))
@@ -43,11 +45,15 @@ fun ProfileScreen(state: FreshCutState, navigate: (String) -> Unit, logout: () -
             CardSurface(Modifier.fillMaxWidth()) {
                 listOf(Triple("calendar", "Mis citas", "appointments"), Triple("heart", "Mis favoritos", "favorites"), Triple("edit", "Mis publicaciones", "publications"), Triple("bell", "Notificaciones", "notifications"), Triple("card", "Métodos de pago", "payments"), Triple("help", "Ayuda y soporte", "support")).forEachIndexed { index, (icon, label, route) -> MenuRow(icon, label, onClick = { navigate(route) }); if (index < 5) HorizontalDivider(color = Line) }
             }
+            MenuRow("flame", "Actividad de recomendaciones", onClick = { resetActivity = true })
             MenuRow("logout", "Cerrar sesión", onClick = { confirmLogout = true }, red = true)
+            TextButton({ deleteAccount = true }) { Text("Eliminar mi cuenta", color = Red, fontSize = 12.sp) }
             Text("FRESHCUT · TU ESTILO, A TU MANERA", color = Muted, fontSize = 9.sp, letterSpacing = 1.2.sp, modifier = Modifier.padding(bottom = 22.dp))
         }
     }
-    if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("¿Cerrar sesión?") }, text = { Text("Tus favoritos y citas de demostración seguirán guardados en este teléfono.") }, confirmButton = { TextButton(logout) { Text("Cerrar sesión", color = Red) } }, dismissButton = { TextButton({ confirmLogout = false }) { Text("Volver") } })
+    if (resetActivity) AlertDialog(onDismissRequest = { resetActivity = false }, title = { Text("Borrar vistas y ocultamientos") }, text = { Text("Se borrará la actividad de visualización usada para ordenar Para ti y volverán las publicaciones ocultas. Tus favoritos, likes, guardados y reservas se conservan y siguen influyendo.") }, confirmButton = { TextButton({ state.resetRecommendations { resetActivity = false } }, enabled = !state.busy) { Text("Borrar actividad") } }, dismissButton = { TextButton({ resetActivity = false }) { Text("Cancelar") } })
+    if (deleteAccount) AlertDialog(onDismissRequest = { deleteAccount = false }, title = { Text("¿Eliminar tu cuenta?") }, text = { Text("Se eliminarán tu cuenta, publicaciones, comentarios, favoritos y actividad. Tus citas quedarán canceladas y sin tus datos personales en la agenda del negocio. Esta acción no se puede deshacer.") }, confirmButton = { TextButton({ state.deleteAccount { deleteAccount = false } }, enabled = !state.busy) { Text("Eliminar", color = Red) } }, dismissButton = { TextButton({ deleteAccount = false }) { Text("Conservar") } })
+    if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("¿Cerrar sesión?") }, text = { Text("Tus favoritos y citas seguirán guardados en tu cuenta del servidor.") }, confirmButton = { TextButton(logout) { Text("Cerrar sesión", color = Red) } }, dismissButton = { TextButton({ confirmLogout = false }) { Text("Volver") } })
 }
 @Composable
 fun BarbersScreen(select: (Int) -> Unit, back: () -> Unit) {
@@ -98,9 +104,9 @@ fun SettingsScreen(state: FreshCutState, back: () -> Unit, message: (String) -> 
             if (error.isNotEmpty()) Text(error, color = Red, fontSize = 12.sp)
             PrimaryButton("Guardar cambios", {
                 if (name.trim().length < 2 || !Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()) error = "Escribe un nombre y un correo válidos."
-                else { state.updateProfile(name.trim(), email.trim()); message("Perfil actualizado"); back() }
+                else { state.updateProfile(name.trim(), email.trim()) { message("Perfil actualizado"); back() } }
             }, icon = "check")
-            Note("Tus datos se guardan únicamente en este dispositivo.")
+            Note("Tus datos se guardan en el servidor de la barbería.")
         }
     }
 }
@@ -110,6 +116,7 @@ fun AuxiliaryScreen(route: String, state: FreshCutState, back: () -> Unit, navig
     var expanded by rememberSaveable { mutableIntStateOf(-1) }
     var composePost by remember { mutableStateOf(false) }
     var draft by rememberSaveable { mutableStateOf("") }
+    var postCut by rememberSaveable { mutableIntStateOf(0) }
     Column {
         ScreenHeader(title, back)
         Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -117,28 +124,28 @@ fun AuxiliaryScreen(route: String, state: FreshCutState, back: () -> Unit, navig
                 "notifications" -> {
                     CardSurface { Row(verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("Recordatorios de citas", fontWeight = FontWeight.Bold, fontSize = 15.sp); Text("Preferencia de demostración", color = Muted, fontSize = 12.sp) }; Switch(state.reminders, { state.setReminder(it) }) } }
                     Note("En esta versión no se envían notificaciones al sistema. Consulta tus próximas visitas en Mis citas.", "bell")
-                    state.appointments.filter { !it.cancelled && appointmentTime(it.date, it.time) > System.currentTimeMillis() }.forEach { item -> CardSurface { MenuRow("calendar", "Tienes una cita guardada", "${dayLabel(item.date)} · ${item.time}", { navigate("appointments") }) } }
-                    if (state.appointments.none { !it.cancelled }) EmptyState("Todo al día", "Cuando agendes una cita, encontrarás sus detalles aquí.", "bell")
+                    state.myAppointments.filter { !it.cancelled && it.status.isEmpty() && it.start > System.currentTimeMillis() }.forEach { item -> CardSurface { MenuRow("calendar", "Tienes una cita guardada", "${dayLabel(item.date)} · ${item.time}", { navigate("appointments") }) } }
+                    if (state.myAppointments.none { !it.cancelled && it.status.isEmpty() && it.start > System.currentTimeMillis() }) EmptyState("Todo al día", "Cuando agendes una cita, encontrarás sus detalles aquí.", "bell")
                 }
                 "payments" -> {
                     CardSurface { MenuRow("card", "Pago en la barbería", "Efectivo · seleccionado", {}, trailing = { Glyph("check", Navy) }) }
-                    Note("No se cobran reservas en esta demostración. No necesitas agregar una tarjeta.", "lock")
+                    Note("Paga tu servicio en la barbería. No necesitas agregar una tarjeta.", "lock")
                     Text("Precios transparentes", fontWeight = FontWeight.Bold, fontSize = 19.sp)
                     services.forEach { item -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.name, fontSize = 14.sp); Text("$${item.price} MXN", fontSize = 14.sp, fontWeight = FontWeight.Bold) } }
                 }
                 "publications" -> {
-                    if (state.publications.isEmpty()) EmptyState("Tu estilo tiene una historia", "Crea una publicación de demostración con tu experiencia.", "edit")
+                    if (state.publications.isEmpty()) EmptyState("Tu estilo tiene una historia", "Comparte tu experiencia con la comunidad de FreshCut.", "edit")
                     PrimaryButton("Crear publicación", { composePost = true }, red = true, icon = "plus")
-                    state.publications.forEach { post -> CardSurface(Modifier.fillMaxWidth()) { Text(state.name, fontWeight = FontWeight.Bold); Text("Solo en este dispositivo", color = Muted, fontSize = 11.sp); Spacer(Modifier.height(12.dp)); Text(post, fontSize = 14.sp) } }
+                    state.publications.forEach { post -> CardSurface(Modifier.fillMaxWidth()) { Text(state.name, fontWeight = FontWeight.Bold); Text("Publicado en FreshCut", color = Muted, fontSize = 11.sp); Spacer(Modifier.height(12.dp)); Text(post, fontSize = 14.sp) } }
                 }
                 else -> {
                     Heading("Estamos para ayudarte", "Todo lo que necesitas para tu próxima visita.")
-                    val faqs = listOf("¿Cómo agendo una cita?" to "Elige un servicio, tu barbero, la fecha y un horario disponible. Revisa el resumen y confirma. Tu cita aparecerá en Mis citas.", "¿Puedo cambiar mi horario?" to "Sí. En Mis citas, toca Reprogramar, selecciona otro horario y confirma el cambio.", "¿Cómo cancelo una cita?" to "En Mis citas, toca Cancelar y confirma. La cita quedará en tu historial.", "¿Se realiza una reserva real?" to "Esta versión es una demostración. Las citas, el perfil y los favoritos se guardan en el teléfono y no se envían a una barbería.", "¿Cómo guardo un corte?" to "Toca el corazón en el catálogo o en el detalle del corte. Lo encontrarás en Mis favoritos.")
+                    val faqs = listOf("¿Cómo agendo una cita?" to "Elige un servicio, tu barbero, la fecha y un horario disponible. Revisa el resumen y confirma. Tu cita aparecerá en Mis citas.", "¿Puedo cambiar mi horario?" to "Sí. En Mis citas, toca Reprogramar, selecciona otro horario y confirma el cambio.", "¿Cómo cancelo una cita?" to "En Mis citas, toca Cancelar y confirma. La cita quedará en tu historial.", "¿Se realiza una reserva real?" to "Las citas se guardan en el servidor de la barbería. Durante el desarrollo, usa cuentas y reservas de prueba.", "¿Cómo guardo un corte?" to "Toca el corazón en el catálogo o en el detalle del corte. Lo encontrarás en Mis favoritos.")
                     faqs.forEachIndexed { i, (question, answer) -> CardSurface(Modifier.fillMaxWidth().clickable { expanded = if (expanded == i) -1 else i }) { Row(verticalAlignment = Alignment.CenterVertically) { Text(question, Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold); Glyph(if (expanded == i) "close" else "plus", Navy, 18.dp) }; if (expanded == i) Text(answer, Modifier.padding(top = 12.dp), color = Muted, fontSize = 13.sp, lineHeight = 21.sp) } }
                     Brand(compact = true)
                 }
             }
         }
     }
-    if (composePost) AlertDialog(onDismissRequest = { composePost = false }, title = { Text("Comparte tu experiencia") }, text = { OutlinedTextField(draft, { if (it.length <= 500) draft = it }, label = { Text("¿Qué tal tu nuevo estilo?") }, supportingText = { Text("${draft.length}/500 · publicación local") }, minLines = 3) }, confirmButton = { TextButton({ state.publish(draft.trim()); draft = ""; composePost = false }, enabled = draft.isNotBlank()) { Text("Publicar") } }, dismissButton = { TextButton({ composePost = false }) { Text("Cancelar") } })
+    if (composePost) AlertDialog(onDismissRequest = { composePost = false }, title = { Text("Comparte tu experiencia") }, text = { Column { ChipRow(cuts.map { it.name }, cuts[postCut].name, { chosen -> postCut = cuts.indexOfFirst { it.name == chosen } }); OutlinedTextField(draft, { if (it.length <= 500) draft = it }, label = { Text("¿Qué tal tu nuevo estilo?") }, supportingText = { Text("${draft.length}/500 · publicación en FreshCut") }, minLines = 3) } }, confirmButton = { TextButton({ state.publish(draft.trim(), postCut) { draft = ""; composePost = false } }, enabled = draft.isNotBlank()) { Text("Publicar") } }, dismissButton = { TextButton({ composePost = false }) { Text("Cancelar") } })
 }

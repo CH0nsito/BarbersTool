@@ -21,15 +21,22 @@ import java.util.UUID
 
 @Composable
 fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: String, back: () -> Unit, onConfirmed: () -> Unit, message: (String) -> Unit) {
-    val existing = remember(editId) { state.appointments.find { it.id == editId } }
+    val existing = remember(editId) { state.myAppointments.find { it.id == editId } }
+    val reservationId = rememberSaveable(editId) { existing?.id ?: UUID.randomUUID().toString() }
     var step by rememberSaveable(editId) { mutableIntStateOf(if (existing != null) 2 else 1) }
     var service by rememberSaveable(editId) { mutableIntStateOf(existing?.service ?: firstActiveService()) }
     var barber by rememberSaveable(editId) { mutableIntStateOf(existing?.barber ?: if (barberId in barbers.indices && barbers[barberId].active) barberId else firstActiveBarber()) }
     var date by rememberSaveable(editId) { mutableLongStateOf(existing?.date?.coerceAtLeast(today()) ?: nextDay(today(), 1)) }
     var time by rememberSaveable(editId) { mutableStateOf(existing?.time ?: "") }
+    val selectedService = if (existing != null && existing.service == service)
+        services[service].copy(name = existing.serviceName, minutes = existing.serviceMinutes, price = existing.servicePrice)
+        else services[service]
     var month by rememberSaveable(editId) { mutableLongStateOf(date) }
+    LaunchedEffect(step, date, barber, service) {
+        if (step == 2) state.loadAvailability(date, barber, service, editId)
+    }
     BackHandler(enabled = step > 1) { step-- }
-    val canContinue = step != 2 || (time.isNotEmpty() && state.slotAvailable(date, time, barber, service, editId))
+    val canContinue = step != 2 || (!state.availabilityBusy && time in state.availableSlots)
     Column(Modifier.fillMaxSize()) {
         ScreenHeader(if (editId.isEmpty()) "Agendar cita" else "Reprogramar cita", { if (step > 1) step-- else back() })
         Row(Modifier.fillMaxWidth().padding(horizontal = 26.dp, vertical = 14.dp), verticalAlignment = Alignment.Top) {
@@ -88,28 +95,29 @@ fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: Strin
                             }
                         }
                     }
-                    Heading("Horarios disponibles", "Con ${barbers[barber].name} · ${services[service].minutes} minutos")
+                    if (state.availabilityBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Heading("Horarios disponibles", "Con ${barbers[barber].name} · ${selectedService.minutes} minutos")
                     if (isClosedDay(date)) Note("La barbería descansa este día. Elige otra fecha.", "calendar")
                     if (!barbers[barber].active) Note("${barbers[barber].name} no está recibiendo reservas. Vuelve al paso 1 y elige otro barbero.", "user")
                     timeSlots.chunked(3).forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) { row.forEach { slot ->
-                        val available = state.slotAvailable(date, slot, barber, service, editId)
+                        val available = !state.availabilityBusy && slot in state.availableSlots
                         OutlinedButton({ time = slot }, Modifier.weight(1f).height(44.dp), enabled = available, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, if (time == slot) Red else Line), colors = ButtonDefaults.outlinedButtonColors(containerColor = if (time == slot) Red else Color.White, contentColor = if (time == slot) Color.White else Ink), contentPadding = PaddingValues(0.dp)) { Text(slot, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                     } } }
-                    Note("Disponibilidad de demostración. La cita se guardará en este dispositivo.", "calendar")
+                    Note("El servidor confirmará la disponibilidad al guardar tu cita.", "calendar")
                 }
                 else -> {
                     Heading("Todo listo para tu visita", "Revisa los detalles antes de confirmar.")
                     CardSurface(Modifier.fillMaxWidth()) {
-                        SummaryRow("cut", "Servicio", services[service].name)
+                        SummaryRow("cut", "Servicio", selectedService.name)
                         SummaryRow("calendar", "Fecha", dayLabel(date, "EEEE, d 'de' MMMM 'de' yyyy"))
-                        SummaryRow("clock", "Hora", "$time · ${services[service].minutes} minutos")
+                        SummaryRow("clock", "Hora", "$time · ${selectedService.minutes} minutos")
                         SummaryRow("user", "Barbero", barbers[barber].name)
                         SummaryRow("pin", "Lugar", "FreshCut Barbería")
                         if (cutId >= 0) SummaryRow("bookmark", "Tu inspiración", cuts[cutId].name)
-                        Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("Total", fontWeight = FontWeight.Bold); Text("$${services[service].price} MXN", color = Navy, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp) }
+                        Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("Total", fontWeight = FontWeight.Bold); Text("$${selectedService.price} MXN", color = Navy, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp) }
                         Text("Pago en la barbería", color = Muted, fontSize = 11.sp)
                     }
-                    Note("Esta es una reserva de demostración. No se enviará a una barbería ni se realizará ningún cobro.")
+                    Note("La reserva se guardará en la agenda compartida de la barbería. El pago se realiza en el local.")
                 }
             }
         }
@@ -117,11 +125,10 @@ fun BookingScreen(state: FreshCutState, cutId: Int, barberId: Int, editId: Strin
             PrimaryButton(if (step == 3) "Confirmar cita" else "Siguiente", {
                 if (step < 3) step++ else {
                     if (state.slotAvailable(date, time, barber, service, editId)) {
-                        state.saveAppointment(Appointment(existing?.id ?: UUID.randomUUID().toString(), service, date, time, barber, cutId.coerceAtLeast(0)))
-                        onConfirmed()
+                        state.saveAppointment(Appointment(reservationId, service, date, time, barber, cutId.coerceAtLeast(0), phone = existing?.phone.orEmpty(), serviceName = selectedService.name, serviceMinutes = selectedService.minutes, servicePrice = selectedService.price), onConfirmed)
                     } else { message("Ese horario ya no está disponible. Elige otro."); step = 2; time = "" }
                 }
-            }, red = step != 2, enabled = canContinue, icon = if (step == 3) "check" else "arrow")
+            }, red = step != 2, enabled = canContinue && !state.busy, icon = if (step == 3) "check" else "arrow")
         }
     }
 }
@@ -149,12 +156,12 @@ fun AppointmentScreen(state: FreshCutState, book: () -> Unit, reschedule: (Appoi
                     Row(Modifier.fillMaxWidth().background(if (item.cancelled) Paper else Color(0xFFFFF0F0), RoundedCornerShape(10.dp)).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("calendar", Red, 18.dp); Text("${dayLabel(item.date)} · ${item.time}", color = Red, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
                     Spacer(Modifier.height(15.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) { Photo(barbers[item.barber].photo, Modifier.size(44.dp).clip(CircleShape)); Column { Text(barbers[item.barber].name, fontWeight = FontWeight.Bold, fontSize = 15.sp); Text("Tu barbero · FreshCut", fontSize = 12.sp, color = Muted) } }
-                    Row(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(services[item.service].name, fontSize = 14.sp); Text("$${services[item.service].price}", fontWeight = FontWeight.Bold) }
+                    Row(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(item.serviceName, fontSize = 14.sp); Text("$${item.servicePrice}", fontWeight = FontWeight.Bold) }
                     if (tab == "Próximas") Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton({ reschedule(item) }, Modifier.weight(1f), shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(8.dp)) { Text("Reprogramar", fontSize = 12.sp) }
                         OutlinedButton({ cancelId = item.id }, Modifier.weight(1f), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Red), contentPadding = PaddingValues(8.dp)) { Text("Cancelar", fontSize = 12.sp) }
                     } else Text(if (item.cancelled) "Cancelada" else "Finalizada", color = if (item.cancelled) Red else Muted, fontSize = 12.sp)
-                    Text("Reserva local de demostración", Modifier.padding(top = 9.dp), color = Muted, fontSize = 10.sp)
+                    Text("Reserva sincronizada con la barbería", Modifier.padding(top = 9.dp), color = Muted, fontSize = 10.sp)
                 }
             }
         }
@@ -166,7 +173,7 @@ fun BookingSuccess(onAppointments: () -> Unit, onHome: () -> Unit) {
     Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(100.dp).background(SoftBlue, CircleShape), contentAlignment = Alignment.Center) { Glyph("check", Navy, 50.dp) }
         Spacer(Modifier.height(28.dp)); Text("¡Tienes una cita!", fontSize = 29.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(12.dp)); Text("Tu reserva de demostración quedó guardada. Puedes verla o cambiarla en Mis citas.", textAlign = TextAlign.Center, color = Muted, fontSize = 15.sp, lineHeight = 23.sp)
+        Spacer(Modifier.height(12.dp)); Text("Tu reserva quedó guardada en el servidor. Puedes verla o cambiarla en Mis citas.", textAlign = TextAlign.Center, color = Muted, fontSize = 15.sp, lineHeight = 23.sp)
         Spacer(Modifier.height(32.dp)); PrimaryButton("Ver mis citas", onAppointments, icon = "calendar"); TextButton(onHome) { Text("Volver al inicio") }
     }
 }

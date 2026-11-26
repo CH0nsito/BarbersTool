@@ -50,7 +50,7 @@ private fun String.cap() = replaceFirstChar { it.uppercase() }
 private fun greeting(): String = Calendar.getInstance().get(Calendar.HOUR_OF_DAY).let { if (it < 12) "Buenos días" else if (it < 19) "Buenas tardes" else "Buenas noches" }
 private fun initials(name: String) = name.trim().split(' ').filter { it.isNotBlank() }.take(2).joinToString("") { it.first().uppercase() }.ifEmpty { "C" }
 private fun clientKey(a: Appointment) = if (a.clientEmail.isNotBlank()) a.clientEmail.lowercase() else a.client.trim().lowercase()
-private fun price(a: Appointment) = services[a.service].price
+private fun price(a: Appointment) = a.servicePrice
 private val weekdayNames = mapOf(2 to "lunes", 3 to "martes", 4 to "miércoles", 5 to "jueves", 6 to "viernes", 7 to "sábado", 1 to "domingo")
 fun hoursSummary(): String {
     val base = "${hour(openHour)} – ${hour(closeHour)}"
@@ -89,13 +89,13 @@ fun OwnerLoginScreen(state: FreshCutState, back: () -> Unit) {
             PrimaryButton("Entrar al panel", {
                 error = when {
                     !Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches() -> "Escribe un correo electrónico válido."
-                    password.length < 6 -> "La contraseña debe tener al menos 6 caracteres."
+                    password.length < 8 -> "La contraseña debe tener al menos 8 caracteres."
                     else -> ""
                 }
-                if (error.isEmpty()) state.ownerLogin(email.trim())
+                if (error.isEmpty()) state.ownerLogin(email.trim(), password)
             })
-            Note("Modo demostración. No se autentica en un servidor; los datos del negocio se guardan solo en este teléfono.")
-            TextButton({ state.ownerLogin("dueno@freshcut.mx") }) { Text("Explorar panel de demostración", fontWeight = FontWeight.Bold) }
+            Note("Usa la cuenta del dueño creada desde la PC. Los permisos se verifican en el servidor.")
+            TextButton({ state.showConnection = true }) { Text("Configurar conexión", fontWeight = FontWeight.Bold) }
             TextButton(back) { Text("¿Eres cliente? Volver a la app", color = Red, fontSize = 13.sp) }
             Spacer(Modifier.height(20.dp))
         }
@@ -154,6 +154,7 @@ fun OwnerApp(state: FreshCutState) {
                 route == "dashboard" -> OwnerDashboard(state, navigate) { agendaDay = today(); navigate("agenda") }
                 route == "agenda" -> OwnerAgenda(state, agendaDay, { agendaDay = it }, agendaBarber, { agendaBarber = it }, navigate)
                 route == "clients" -> OwnerClients(state, navigate)
+                route == "posts" -> AuxiliaryScreen("publications", state, back, navigate)
                 route == "business" -> OwnerBusiness(state, navigate, message)
                 route.startsWith("appt/") -> OwnerAppointmentDetail(state, route.substringAfter('/'), back, navigate, message)
                 route.startsWith("new/") -> OwnerNewAppointment(
@@ -188,11 +189,11 @@ fun OwnerAppointmentCard(item: Appointment, onClick: () -> Unit, showDate: Boole
         Box(Modifier.width(5.dp).fillMaxHeight().background(color))
         Column(Modifier.padding(start = 12.dp, top = 12.dp, bottom = 12.dp).width(58.dp)) {
             Text(item.time, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Text(if (showDate) dayLabel(item.date, "d MMM yy") else "${services[item.service].minutes} min", color = Muted, fontSize = 10.sp)
+            Text(if (showDate) dayLabel(item.date, "d MMM yy") else "${item.serviceMinutes} min", color = Muted, fontSize = 10.sp)
         }
         Column(Modifier.weight(1f).padding(vertical = 12.dp)) {
             Text(item.client.ifBlank { "Cliente" }, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(services[item.service].name, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(item.serviceName, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Photo(barbers[item.barber].photo, Modifier.size(18.dp).clip(CircleShape)); Text(barbers[item.barber].name, color = Navy, fontSize = 11.sp, fontWeight = FontWeight.Medium, maxLines = 1)
             }
@@ -354,7 +355,7 @@ fun OwnerDashboard(state: FreshCutState, navigate: (String) -> Unit, openAgendaT
                     }
                 }
             }
-            Note("Panel de demostración. Los datos se guardan solo en este teléfono y se comparten con la app del cliente instalada aquí.")
+            Note("Agenda compartida con los clientes conectados al mismo servidor. Los cambios se sincronizan automáticamente.")
         }
         Spacer(Modifier.height(8.dp))
     }
@@ -427,7 +428,7 @@ fun OwnerAppointmentDetail(state: FreshCutState, id: String, back: () -> Unit, n
                     Spacer(Modifier.height(8.dp))
                     if (item.phone.isNotBlank()) SummaryRow("phone", "Teléfono", item.phone)
                     if (item.clientEmail.isNotBlank()) SummaryRow("mail", "Correo", item.clientEmail)
-                    SummaryRow("cut", "Servicio", "${services[item.service].name} · ${services[item.service].minutes} min")
+                    SummaryRow("cut", "Servicio", "${item.serviceName} · ${item.serviceMinutes} min")
                     SummaryRow("calendar", "Fecha", dayLabel(item.date, "EEEE, d 'de' MMMM 'de' yyyy"))
                     SummaryRow("clock", "Hora", item.time)
                     SummaryRow("user", "Barbero", barbers[item.barber].name)
@@ -443,24 +444,25 @@ fun OwnerAppointmentDetail(state: FreshCutState, id: String, back: () -> Unit, n
             }
             if (!item.cancelled) BottomAction {
                 if (item.status == "") {
-                    PrimaryButton("Marcar como atendida", { state.setStatus(item.id, "done"); message("Cita marcada como atendida") }, icon = "check")
+                    PrimaryButton("Marcar como atendida", { state.setStatus(item.id, "done") { message("Cita marcada como atendida") } }, icon = "check")
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton({ state.setStatus(item.id, "noshow"); message("Registrado: el cliente no asistió") }, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("No asistió", fontSize = 12.sp) }
+                        OutlinedButton({ state.setStatus(item.id, "noshow") { message("Registrado: el cliente no asistió") } }, Modifier.weight(1f), shape = RoundedCornerShape(10.dp)) { Text("No asistió", fontSize = 12.sp) }
                         OutlinedButton({ confirmCancel = true }, Modifier.weight(1f), shape = RoundedCornerShape(10.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Red)) { Text("Cancelar cita", fontSize = 12.sp) }
                     }
-                } else OutlinedButton({ state.setStatus(item.id, ""); message("La cita volvió a quedar pendiente") }, Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp)) { Text("Deshacer: marcar como pendiente") }
+                } else OutlinedButton({ state.setStatus(item.id, "") { message("La cita volvió a quedar pendiente") } }, Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp)) { Text("Deshacer: marcar como pendiente") }
             }
         }
     }
     if (confirmCancel && item != null) AlertDialog(onDismissRequest = { confirmCancel = false }, title = { Text("¿Cancelar esta cita?") },
         text = { Text("El horario de ${barbers[item.barber].name} quedará libre. ${if (item.clientEmail.isNotBlank()) "El cliente la verá como cancelada en su app." else ""}") },
-        confirmButton = { TextButton({ state.cancel(item.id); confirmCancel = false; message("Cita cancelada") }) { Text("Sí, cancelar", color = Red) } },
+        confirmButton = { TextButton({ state.cancel(item.id) { confirmCancel = false; message("Cita cancelada") } }) { Text("Sí, cancelar", color = Red) } },
         dismissButton = { TextButton({ confirmCancel = false }) { Text("Conservar") } })
 }
 
 // ---------------------------------------------------------------- Nueva cita (mostrador / teléfono)
 @Composable
 fun OwnerNewAppointment(state: FreshCutState, initialDate: Long, initialTime: String, initialBarber: Int, initialClient: String, initialPhone: String, back: () -> Unit, onSaved: (Long) -> Unit) {
+    val reservationId = rememberSaveable { UUID.randomUUID().toString() }
     var client by rememberSaveable { mutableStateOf(initialClient) }
     var phone by rememberSaveable { mutableStateOf(initialPhone) }
     var service by rememberSaveable { mutableIntStateOf(firstActiveService()) }
@@ -468,7 +470,8 @@ fun OwnerNewAppointment(state: FreshCutState, initialDate: Long, initialTime: St
     var date by rememberSaveable { mutableLongStateOf(maxOf(dayStart(initialDate), today())) }
     var time by rememberSaveable { mutableStateOf(initialTime) }
     val days = (0 until 45).map { nextDay(today(), it) }
-    val slotOk = time.isNotEmpty() && state.slotAvailable(date, time, barber, service)
+    LaunchedEffect(date, barber, service) { state.loadAvailability(date, barber, service) }
+    val slotOk = !state.availabilityBusy && time in state.availableSlots
     val valid = client.trim().length >= 2 && slotOk
     Column(Modifier.fillMaxSize()) {
         ScreenHeader("Nueva cita", back)
@@ -499,7 +502,7 @@ fun OwnerNewAppointment(state: FreshCutState, initialDate: Long, initialTime: St
                 else timeSlots.chunked(3).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                         row.forEach { slot ->
-                            val available = state.slotAvailable(date, slot, barber, service)
+                            val available = !state.availabilityBusy && slot in state.availableSlots
                             OutlinedButton({ time = slot }, Modifier.weight(1f).height(44.dp), enabled = available, shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, if (time == slot) Red else Line), colors = ButtonDefaults.outlinedButtonColors(containerColor = if (time == slot) Red else Color.White, contentColor = if (time == slot) Color.White else Ink), contentPadding = PaddingValues(0.dp)) { Text(slot, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                         }
                         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
@@ -512,9 +515,8 @@ fun OwnerNewAppointment(state: FreshCutState, initialDate: Long, initialTime: St
         BottomAction {
             if (client.isNotEmpty() && client.trim().length < 2) Text("Escribe el nombre del cliente.", color = Red, fontSize = 12.sp)
             PrimaryButton("Guardar cita", {
-                state.saveOwnerAppointment(Appointment(UUID.randomUUID().toString(), service, date, time, barber, 0, client = client.trim(), phone = phone.trim()))
-                onSaved(date)
-            }, red = true, icon = "check", enabled = valid)
+                state.saveOwnerAppointment(Appointment(reservationId, service, date, time, barber, 0, client = client.trim(), phone = phone.trim())) { onSaved(date) }
+            }, red = true, icon = "check", enabled = valid && !state.busy)
         }
     }
 }
@@ -625,6 +627,7 @@ fun OwnerBusiness(state: FreshCutState, navigate: (String) -> Unit, message: (St
                 MenuRow("cut", "Servicios y precios", "${services.count { it.active }} activos de ${services.size}", { navigate("services") }); HorizontalDivider(color = Line)
                 MenuRow("users", "Equipo de barberos", "${barbers.count { it.active }} disponibles para reservar", { navigate("team") }); HorizontalDivider(color = Line)
                 MenuRow("clock", "Horario de atención", hoursSummary(), { navigate("hours") }); HorizontalDivider(color = Line)
+                MenuRow("edit", "Publicaciones del negocio", "Comparte un corte con tus clientes", { navigate("posts") })
                 MenuRow("chart", "Datos de ejemplo", if (state.hasDemoData) "Cargados · toca para quitarlos" else "Llena el panel para probarlo", { demoDialog = true })
             }
             Spacer(Modifier.height(8.dp))
@@ -635,7 +638,7 @@ fun OwnerBusiness(state: FreshCutState, navigate: (String) -> Unit, message: (St
     if (demoDialog) AlertDialog(onDismissRequest = { demoDialog = false },
         title = { Text(if (state.hasDemoData) "¿Quitar datos de ejemplo?" else "¿Cargar datos de ejemplo?") },
         text = { Text(if (state.hasDemoData) "Se borrarán las citas ficticias. Las reservas reales de clientes y las que agendaste tú se conservan." else "Se agregarán citas ficticias de la última semana y los próximos días para que veas el panel funcionando. Podrás quitarlas después.") },
-        confirmButton = { TextButton({ if (state.hasDemoData) { state.clearDemo(); message("Datos de ejemplo eliminados") } else { state.seedDemo(); message("Datos de ejemplo cargados") }; demoDialog = false }) { Text(if (state.hasDemoData) "Quitar" else "Cargar", color = Red) } },
+        confirmButton = { TextButton({ if (state.hasDemoData) { state.clearDemo { message("Datos de ejemplo eliminados") } } else { state.seedDemo { message("Datos de ejemplo cargados") } }; demoDialog = false }) { Text(if (state.hasDemoData) "Quitar" else "Cargar", color = Red) } },
         dismissButton = { TextButton({ demoDialog = false }) { Text("Volver") } })
     if (confirmLogout) AlertDialog(onDismissRequest = { confirmLogout = false }, title = { Text("¿Cerrar sesión del panel?") }, text = { Text("Tu agenda, servicios y equipo seguirán guardados en este teléfono.") },
         confirmButton = { TextButton({ confirmLogout = false; state.ownerLogout() }) { Text("Cerrar sesión", color = Red) } }, dismissButton = { TextButton({ confirmLogout = false }) { Text("Volver") } })
@@ -659,7 +662,7 @@ fun OwnerServices(state: FreshCutState, navigate: (String) -> Unit, back: () -> 
                         }
                         Switch(item.active, { on ->
                             if (!on && services.count { it.active } <= 1) message("Debe quedar al menos un servicio activo.")
-                            else { state.saveService(i, item.copy(active = on)); message(if (on) "${item.name} ya está visible" else "${item.name} quedó oculto") }
+                            else { state.saveService(i, item.copy(active = on)) { message(if (on) "${item.name} ya está visible" else "${item.name} quedó oculto") } }
                         }, colors = SwitchDefaults.colors(checkedTrackColor = Red))
                     }
                 }
@@ -707,7 +710,7 @@ fun OwnerServiceEditor(state: FreshCutState, index: Int, back: () -> Unit, messa
                     !active && services.withIndex().none { it.index != index && it.value.active } -> "Debe quedar al menos un servicio activo."
                     else -> ""
                 }
-                if (error.isEmpty()) { state.saveService(index, Service(name.trim(), m, p, photo, active)); message(if (original == null) "Servicio agregado" else "Servicio actualizado"); back() }
+                if (error.isEmpty()) { state.saveService(index, Service(name.trim(), m, p, photo, active)) { message(if (original == null) "Servicio agregado" else "Servicio actualizado"); back() } }
             }, red = true, icon = "check")
         }
     }
@@ -733,7 +736,7 @@ fun OwnerTeam(state: FreshCutState, navigate: (String) -> Unit, back: () -> Unit
                         }
                         Switch(person.active, { on ->
                             if (!on && barbers.count { it.active } <= 1) message("Debe quedar al menos un barbero activo.")
-                            else { state.saveBarber(i, person.copy(active = on)); message(if (on) "${person.name} vuelve a recibir reservas" else "${person.name} ya no recibe reservas nuevas") }
+                            else { state.saveBarber(i, person.copy(active = on)) { message(if (on) "${person.name} vuelve a recibir reservas" else "${person.name} ya no recibe reservas nuevas") } }
                         }, colors = SwitchDefaults.colors(checkedTrackColor = Red))
                     }
                 }
@@ -777,7 +780,7 @@ fun OwnerBarberEditor(state: FreshCutState, index: Int, back: () -> Unit, messag
                     !active && barbers.withIndex().none { it.index != index && it.value.active } -> "Debe quedar al menos un barbero activo."
                     else -> ""
                 }
-                if (error.isEmpty()) { state.saveBarber(index, Barber(name.trim(), specialty.trim(), photo, original?.rating ?: "Nuevo", active)); message(if (original == null) "Barbero agregado" else "Datos actualizados"); back() }
+                if (error.isEmpty()) { state.saveBarber(index, Barber(name.trim(), specialty.trim(), photo, original?.rating ?: "Nuevo", active)) { message(if (original == null) "Barbero agregado" else "Datos actualizados"); back() } }
             }, red = true, icon = "check")
         }
     }
@@ -831,7 +834,7 @@ fun OwnerHours(state: FreshCutState, back: () -> Unit, message: (String) -> Unit
         BottomAction {
             PrimaryButton("Guardar horario", {
                 if (closed.size >= 7) message("Deja al menos un día abierto.")
-                else { state.saveHours(open, close, closed); message("Horario actualizado"); back() }
+                else { state.saveHours(open, close, closed) { message("Horario actualizado"); back() } }
             }, red = true, icon = "check")
         }
     }
